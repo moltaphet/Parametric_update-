@@ -18,12 +18,11 @@ cleanup caller.
 
 The source-matched StudioNet deployment is recorded in
 [`deployments/studionet.json`](deployments/studionet.json). That file is the
-canonical location for the current address, explorer URL, deployment transaction,
-method counts, and source-verification status.
+canonical location for the current address, explorer URL, method counts, and
+source-verification status.
 
-- Address: [`0x008D0A756F8838E92852ad70133f2f911060559F`](https://genlayer-explorer.vercel.app/address/0x008D0A756F8838E92852ad70133f2f911060559F)
-- Deployment transaction: `0x2cc73b879518b6094f0e1567dc919fa7fe911b2ac647a7073837161ad08acc9c`
-- Deployment execution: `SUCCESS`, accepted by majority agreement and finalized.
+- Address: [`0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896`](https://genlayer-explorer.vercel.app/address/0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896)
+- Deployment: live on StudioNet and responding to `genlayer schema` / `code` / `call` queries (verified 2026-08-22).
 - Retrieved ABI: 18 methods (8 views, 10 writes), including `expire_stale_claim`.
 - Retrieved source: matched `contracts/parametric_insurance.py` byte-for-byte
   after removing the CLI result framing.
@@ -36,7 +35,7 @@ To inspect the deployed contract:
 
 ```bash
 genlayer network set studionet
-C=0x008D0A756F8838E92852ad70133f2f911060559F
+C=0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896
 genlayer code "$C"
 genlayer schema "$C"
 genlayer call "$C" get_coverage_terms

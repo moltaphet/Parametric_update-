@@ -2,19 +2,16 @@
   "contract": "ParametricInsurance",
   "source": "contracts/parametric_insurance.py",
   "network": "studionet",
-  "address": "0x008D0A756F8838E92852ad70133f2f911060559F",
-  "explorerUrl": "https://genlayer-explorer.vercel.app/address/0x008D0A756F8838E92852ad70133f2f911060559F",
-  "deploymentTransaction": "0x2cc73b879518b6094f0e1567dc919fa7fe911b2ac647a7073837161ad08acc9c",
-  "deployedAt": "2026-08-21T16:49:32.268798+00:00",
-  "deployer": "0x14193a5F930a72692A239DF9839574889acf9795",
+  "address": "0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896",
+  "explorerUrl": "https://genlayer-explorer.vercel.app/address/0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896",
   "status": "live",
   "currentSourceMatch": true,
-  "sourceVerification": "Retrieved with genlayer code and matched byte-for-byte after removing CLI framing.",
-  "schemaVerification": "Retrieved with genlayer schema; expire_stale_claim is present and the ABI has 18 methods.",
+  "sourceVerification": "Retrieved with `genlayer code` on 2026-08-22 and matched contracts/parametric_insurance.py (identical apart from trailing blank lines in the CLI output).",
+  "schemaVerification": "Retrieved with `genlayer schema` on 2026-08-22; 18 methods (8 view, 10 write), including expire_stale_claim.",
   "methods": {
     "total": 18,
     "view": 8,
     "write": 10
   },
-  "notes": "Current StudioNet deployment with deadline-gated evaluation, permissionless stale-policy cleanup that refunds only the holder, direct PAID-verdict native transfers, per-policy reserve locks, and explicit total/reserved/unreserved accounting."
+  "notes": "Current StudioNet deployment with deadline-gated evaluation, permissionless stale-policy cleanup that refunds only the holder, direct PAID-verdict native transfers, per-policy reserve locks, and explicit total/reserved/unreserved accounting. Deployment transaction, deployer, and timestamp were not provided for this redeploy and are intentionally omitted rather than carried over from the prior deployment."
 }
