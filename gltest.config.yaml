@@ -1,0 +1,45 @@
+# gltest network configuration.
+#
+# Direct-mode unit tests (tests/direct/) need none of this - they run in-memory.
+# Integration tests (tests/integration/) run against a real GenLayer environment
+# with full leader + validator consensus:
+#
+#   gltest tests/integration/ -v -s --network studionet
+#
+# studionet is gasless: the preconfigured studio accounts deploy and transact on
+# a 0 GEN balance, so no funded signer or keystore password is required.
+paths:
+  contracts: contracts/
+  artifacts: artifacts/
+
+networks:
+  # Required whenever a `networks:` block is present: gltest pops this key
+  # unconditionally, so omitting it is a hard KeyError on every run rather than
+  # a fallback to localnet. studionet is the project's target - it needs no
+  # Docker and no funded signer - and `--network` still overrides it per run.
+  default: studionet
+
+  localnet:
+    # GenLayer Studio running locally (`genlayer up`), full GenVM.
+    default_wait_interval: 3000
+    default_wait_retries: 50
+  studionet:
+    # studio.genlayer.com - hosted Studio, gasless, rate-limited. Consensus on
+    # a hosted network is slower than localnet, so allow a longer wait.
+    default_wait_interval: 3000
+    default_wait_retries: 100
+  testnet_bradbury:
+    # Real network - requires funded accounts. The keys are deliberately NOT
+    # referenced here: gltest resolves `${VAR}` across the whole file eagerly,
+    # before `--network` is applied, so an unset key would fail every run
+    # (direct mode included) rather than only a testnet run. Supply them in a
+    # `.env` file and uncomment the block below when actually targeting testnet.
+    #
+    #   ACCOUNT_PRIVATE_KEY_1=0x...
+    #   ACCOUNT_PRIVATE_KEY_2=0x...
+    #
+    # accounts:
+    #   - "${ACCOUNT_PRIVATE_KEY_1}"
+    #   - "${ACCOUNT_PRIVATE_KEY_2}"
+    default_wait_interval: 5000
+    default_wait_retries: 200

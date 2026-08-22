@@ -1,0 +1,203 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ParametricInsurance",
+  "description": "Public interface of the Parametric Web Insurance intelligent contract. Amounts are wei (atto-scale, 1 GEN = 10^18 wei). Confirmed claims transfer natively during evaluation; failed and expired policy refunds are queued in claimable until withdrawn. Policy ids are integers.",
+  "contract": "ParametricInsurance",
+  "constructor": {
+    "params": []
+  },
+  "methods": {
+    "fund_pool": {
+      "type": "write",
+      "payable": true,
+      "description": "Top up the payout pool with the call value. Callable by anyone (typically the insurer).",
+      "params": [],
+      "returns": null
+    },
+    "create_policy": {
+      "type": "write",
+      "payable": true,
+      "description": "Create an active policy; premium is the call value and the caller becomes the beneficiary. Enforces the coverage cutoff (see coverage_timeline): the departure must be in the future and at least 24h away, and no more than 1 year out. The claim window is derived from the departure time, not supplied. Reserves premium * 12 as worst-case exposure. Returns the new integer policy id.",
+      "params": [
+        { "name": "flight_number", "type": "string", "description": "Insured flight, e.g. AA100." },
+        { "name": "departure_time", "type": "string", "description": "Scheduled departure as ISO-8601 (UTC assumed if naive), e.g. 2027-03-31T12:00:00Z. Must be >= 24h in the future." },
+        { "name": "delay_threshold_mins", "type": "integer", "description": "Minimum delay in minutes that triggers a payout." }
+      ],
+      "returns": { "type": "integer", "description": "The new policy id." }
+    },
+    "submit_claim": {
+      "type": "write",
+      "payable": false,
+      "description": "Holder claims a delay and names the status page to evaluate. Admissible only inside the derived claim window: from departure until departure + 7 days (see coverage_timeline). The URL must be https and its host must resolve to an allowlisted flight-status domain (see source_trust_model); untrusted origins are rejected before any state is written. ACTIVE -> CLAIM_SUBMITTED.",
+      "params": [
+        { "name": "policy_id", "type": "integer", "description": "Policy to claim against." },
+        { "name": "flight_status_url", "type": "string", "description": "https URL on an allowlisted flight-status domain, rendered during evaluation." }
+      ],
+      "returns": null
+    },
+    "add_trusted_domain": {
+      "type": "write",
+      "payable": false,
+      "description": "Owner-only. Allowlist an additional flight-status provider. Input must be a bare registrable domain (no scheme, credentials, port, path or wildcard). Core domains are already trusted and are rejected as duplicates.",
+      "params": [
+        { "name": "domain", "type": "string", "description": "Bare domain, e.g. flightstats.io. Normalized to lower case with any trailing dot removed." }
+      ],
+      "returns": null
+    },
+    "remove_trusted_domain": {
+      "type": "write",
+      "payable": false,
+      "description": "Owner-only. Revoke a previously added provider. Core domains are immutable and can never be removed. A revoked domain also blocks any already-submitted claim at evaluation time.",
+      "params": [
+        { "name": "domain", "type": "string", "description": "Bare domain previously passed to add_trusted_domain." }
+      ],
+      "returns": null
+    },
+    "evaluate_claim": {
+      "type": "write",
+      "payable": false,
+      "description": "Reject evaluation after claim_closes_ts, then re-check the stored URL against the allowlist before rendering the status page under consensus. The deadline and allowlist checks run before reserve validation, URL rendering, or model execution. A PAID verdict records all effects, validates liquidity, and emits the exact-wei native payout directly to the holder; it does not credit claimable. CLAIM_SUBMITTED -> SETTLED_PAID / REJECTED / FAILED. Reverts fail-closed on stale, untrusted, transient, or model failures.",
+      "params": [
+        { "name": "policy_id", "type": "integer", "description": "Policy whose claim is being evaluated." }
+      ],
+      "returns": { "type": "string", "description": "Resulting status: SETTLED_PAID, REJECTED, or FAILED." }
+    },
+    "reclaim_expired": {
+      "type": "write",
+      "payable": false,
+      "description": "Holder-only compatibility path: strictly after the claim window closes, release the reserve for an unused or stuck policy and queue the premium in claimable for the holder to withdraw. No native transfer occurs in this call. ACTIVE/CLAIM_SUBMITTED -> EXPIRED.",
+      "params": [
+        { "name": "policy_id", "type": "integer", "description": "Policy to reclaim." }
+      ],
+      "returns": null
+    },
+    "expire_stale_claim": {
+      "type": "write",
+      "payable": false,
+      "description": "Permissionless post-deadline cleanup. Any account may expire an unresolved ACTIVE or CLAIM_SUBMITTED policy strictly after claim_closes_ts. The exact policy reserve is released, the premium is removed from pool accounting, and the premium refund is queued for the policy holder. The cleanup caller never receives the refund and no native transfer occurs in this call.",
+      "params": [
+        { "name": "policy_id", "type": "integer", "description": "Unresolved policy to expire." }
+      ],
+      "returns": null
+    },
+    "withdraw": {
+      "type": "write",
+      "payable": false,
+      "description": "Pull-payment for queued FAILED and EXPIRED premium refunds: zero the caller's entire claimable balance, then emit its native transfer via checks-effects-interactions. Confirmed claim payouts do not use this method.",
+      "params": [],
+      "returns": null
+    },
+    "withdraw_unreserved_liquidity": {
+      "type": "write",
+      "payable": false,
+      "description": "Owner-only: withdraw idle pool liquidity to the owner. Strictly capped at get_stats.unreserved_available_atto, so capital locked as worst-case exposure for active policies can never be removed. Reduces total_pool_balance_atto and unreserved_available_atto before the native transfer (checks-effects-interactions).",
+      "params": [
+        { "name": "amount_atto", "type": "integer", "description": "Amount to withdraw in wei. Must be positive and no greater than the unreserved (available) pool balance." }
+      ],
+      "returns": null
+    },
+    "get_policy": {
+      "type": "view",
+      "description": "Full policy record.",
+      "params": [
+        { "name": "policy_id", "type": "integer" }
+      ],
+      "returns": { "type": "object", "description": "All public policy fields; amounts as decimal strings, including max_exposure_atto and the remaining locked_reserve_atto." }
+    },
+    "get_claim_verdict": {
+      "type": "view",
+      "description": "Latest verdict and payout details for a policy.",
+      "params": [
+        { "name": "policy_id", "type": "integer" }
+      ],
+      "returns": { "type": "object", "description": "status, verdict, payout_tier, payout_atto, observed_delay_mins." }
+    },
+    "claimable_of": {
+      "type": "view",
+      "description": "Queued FAILED or EXPIRED premium-refund balance in wei for an account. Confirmed payouts transfer directly and never appear here.",
+      "params": [
+        { "name": "account", "type": "string", "description": "0x-prefixed address." }
+      ],
+      "returns": { "type": "string", "description": "Wei amount as a decimal string." }
+    },
+    "get_coverage_terms": {
+      "type": "view",
+      "description": "Describe the enforced coverage timeline: the pre-departure cutoff, the post-departure claim window, and the maximum advance. These are compiled-in constants, not parameters.",
+      "params": [],
+      "returns": { "type": "object", "description": "coverage_cutoff_seconds, coverage_cutoff_hours, claim_window_seconds, claim_window_days, max_advance_seconds, claim_window_opens_at, claim_window_closes_at, caller_supplied, enforced_at, policy." }
+    },
+    "check_coverage_eligibility": {
+      "type": "view",
+      "description": "Dry-run the coverage cutoff for a departure time without buying a policy. Advisory only; create_policy enforces the identical rule.",
+      "params": [
+        { "name": "departure_time", "type": "string", "description": "Candidate ISO-8601 departure time." }
+      ],
+      "returns": { "type": "object", "description": "eligible (bool), reason (empty when eligible), departure_ts, departure_time, now_ts, cutoff_ts, cutoff_time, claim_opens_ts, claim_closes_ts, claim_closes." }
+    },
+    "is_trusted_url": {
+      "type": "view",
+      "description": "Dry-run the allowlist gate for a URL without submitting a claim. Advisory only; submit_claim and evaluate_claim enforce the same rule.",
+      "params": [
+        { "name": "url", "type": "string", "description": "Candidate flight-status URL." }
+      ],
+      "returns": { "type": "object", "description": "trusted (bool), host (parsed host, empty if unparseable), reason (empty when trusted)." }
+    },
+    "get_trust_model": {
+      "type": "view",
+      "description": "Describe the source trust model: the immutable core domains, the governing owner, the allowed scheme, and where the allowlist is enforced.",
+      "params": [],
+      "returns": { "type": "object", "description": "core_domains, core_immutable, owner, governance, allowed_scheme, enforced_at." }
+    },
+    "get_stats": {
+      "type": "view",
+      "description": "Aggregate contract statistics and pool accounting.",
+      "params": [],
+      "returns": { "type": "object", "description": "policies_created, settled, rejected, failed, expired, total_paid_atto, total_pool_balance_atto, reserved_atto, unreserved_available_atto, liquidity_invariant, plus synchronized compatibility aliases pool_balance_atto and available_atto." }
+    }
+  },
+  "states": ["ACTIVE", "CLAIM_SUBMITTED", "SETTLED_PAID", "REJECTED", "EXPIRED", "FAILED"],
+  "coverage_timeline": {
+    "summary": "Coverage may only be bought strictly before the cutoff, and a claim may only be submitted or evaluated inside a bounded window after the flight. Both bounds are compiled-in constants derived from the departure time; no caller supplies, widens, or skips them.",
+    "coverage_cutoff_seconds": 86400,
+    "claim_window_seconds": 604800,
+    "max_advance_seconds": 31536000,
+    "create_policy_rules": [
+      "departure_ts > now, else [EXPECTED] Flight already departed",
+      "departure_ts - now >= coverage_cutoff_seconds, else [EXPECTED] Past coverage cutoff",
+      "departure_ts - now <= max_advance_seconds, else [EXPECTED] Departure too far in the future"
+    ],
+    "claim_window": "[departure_ts, departure_ts + claim_window_seconds], both bounds inclusive for submission and evaluation. Before it: [EXPECTED] Claim window not open. Evaluation after it: [EXPECTED] Claim window closed.",
+    "reclaim_boundary": "reclaim_expired and expire_stale_claim unlock strictly after the claim window closes: [EXPECTED] Claim window still open.",
+    "enforced_at": ["create_policy", "submit_claim", "evaluate_claim", "reclaim_expired", "expire_stale_claim"]
+  },
+  "source_trust_model": {
+    "summary": "A claim URL is only evaluated if its host resolves, under strict parsing, to an allowlisted authoritative flight-status domain. The policyholder who receives the payout cannot add to or alter that allowlist.",
+    "core_domains": ["flightradar24.com", "flightaware.com", "flightstats.com"],
+    "core_immutable": true,
+    "governance": "Core domains are compiled into the contract and can never be removed. Additional providers may be added or removed only by the owner (the insurer), set at construction and distinct from any beneficiary.",
+    "allowed_scheme": "https",
+    "matching": "Exact host match or a genuine subdomain (label-boundary check). Rejects suffix-label spoofs (flightaware.com.evil.com), userinfo (...@evil.com), query/path/fragment tricks, percent-encoded hosts, backslash authority splits (WHATWG '\\' -> '/' normalization), control characters, IP literals, and non-registrable hosts.",
+    "enforced_at": ["submit_claim", "evaluate_claim"],
+    "enforcement_note": "evaluate_claim re-checks before any web render or model call, so revoking a provider also blocks claims already in flight."
+  },
+  "payout_tiers": {
+    "tier_1_multiplier": 5,
+    "tier_2_multiplier": 12,
+    "notes": "Tier 1: threshold <= delay < 3*threshold. Tier 2: delay >= 3*threshold or cancelled. Payout = premium * multiplier (exact wei). A qualifying payout is emitted natively by evaluate_claim and is never added to claimable."
+  },
+  "liquidity_accounting": {
+    "invariant": "total_pool_balance_atto == reserved_atto + unreserved_available_atto",
+    "policy_lock": "Each unresolved policy stores locked_reserve_atto == max_exposure_atto. Settlement and expiration reject a missing, partial, or aggregate-inconsistent lock.",
+    "compatibility_aliases": {
+      "pool_balance_atto": "total_pool_balance_atto",
+      "available_atto": "unreserved_available_atto"
+    },
+    "refund_boundary": "FAILED and EXPIRED remove the premium from pool accounting and add it to the holder's claimable balance; withdraw later transfers and clears that queued refund. A permissionless cleanup caller is never credited."
+  },
+  "error_taxonomy": {
+    "[EXPECTED]": "Deterministic business-logic error; validators require exact match.",
+    "[EXTERNAL]": "Deterministic external 4xx / flight-not-found; exact match.",
+    "[TRANSIENT]": "Network / 5xx / blank page; validators agree if both transient.",
+    "[LLM_ERROR]": "Model misbehavior; validators always disagree to force rotation."
+  }
+}
