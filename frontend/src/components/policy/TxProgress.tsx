@@ -1,6 +1,6 @@
 import { Check, Loader2, PenLine, Send, ShieldCheck, CircleAlert } from "lucide-react";
 import type { ReactNode } from "react";
-import type { TxStage } from "@/lib/genlayer";
+import { explorerUrl, type TxStage } from "@/lib/genlayer";
 import { shortAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -105,7 +105,7 @@ export function TxProgress({ state }: { state: TxState }) {
 
       {state.hash ? (
         <a
-          href={`https://genlayer-explorer.vercel.app/tx/${state.hash}`}
+          href={explorerUrl("tx", state.hash)}
           target="_blank"
           rel="noreferrer noopener"
           className="mt-3 inline-block font-mono text-xs text-accent underline-offset-2 hover:underline"

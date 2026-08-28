@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Coins, Banknote, ArrowDownToLine, PlusCircle } from "lucide-react";
+import { Coins, Banknote, ArrowDownToLine, PlusCircle, Wallet } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { TxProgress } from "./TxProgress";
 import { useTx } from "@/hooks/useTx";
 import { useToast } from "@/components/ui/toast";
+import { useWallet } from "@/context/wallet";
 import { tx, claimableOf } from "@/lib/genlayer";
 import { formatGen, genToWei } from "@/lib/format";
 
@@ -24,6 +25,7 @@ interface AccountPanelProps {
 
 export function AccountPanel({ account, refreshKey, onChanged }: AccountPanelProps) {
   const { toast } = useToast();
+  const { connected, connect } = useWallet();
   const withdrawTx = useTx();
   const fundTx = useTx();
 
@@ -120,15 +122,21 @@ export function AccountPanel({ account, refreshKey, onChanged }: AccountPanelPro
             </p>
           </div>
           <TxProgress state={withdrawTx.state} />
-          <Button
-            className="w-full"
-            variant="accent"
-            onClick={withdraw}
-            disabled={!hasRefund || withdrawTx.busy}
-          >
-            <ArrowDownToLine className="size-4" />
-            {withdrawTx.busy ? "Withdrawing..." : "Withdraw refunds"}
-          </Button>
+          {connected ? (
+            <Button
+              className="w-full"
+              variant="accent"
+              onClick={withdraw}
+              disabled={!hasRefund || withdrawTx.busy}
+            >
+              <ArrowDownToLine className="size-4" />
+              {withdrawTx.busy ? "Withdrawing..." : "Withdraw refunds"}
+            </Button>
+          ) : (
+            <Button className="w-full" variant="outline" onClick={() => connect()}>
+              <Wallet className="size-4" /> Connect wallet
+            </Button>
+          )}
         </CardContent>
       </Card>
 
@@ -163,10 +171,16 @@ export function AccountPanel({ account, refreshKey, onChanged }: AccountPanelPro
               </div>
             </div>
             <TxProgress state={fundTx.state} />
-            <Button type="submit" className="w-full" disabled={fundTx.busy}>
-              <PlusCircle className="size-4" />
-              {fundTx.busy ? "Funding..." : "Fund pool"}
-            </Button>
+            {connected ? (
+              <Button type="submit" className="w-full" disabled={fundTx.busy}>
+                <PlusCircle className="size-4" />
+                {fundTx.busy ? "Funding..." : "Fund pool"}
+              </Button>
+            ) : (
+              <Button type="button" className="w-full" variant="outline" onClick={() => connect()}>
+                <Wallet className="size-4" /> Connect wallet to fund
+              </Button>
+            )}
           </form>
         </CardContent>
       </Card>

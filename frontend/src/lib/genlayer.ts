@@ -14,8 +14,20 @@ const NETWORK = (import.meta.env.VITE_GENLAYER_NETWORK ?? "studionet") as
   | "testnetAsimov"
   | "localnet";
 
+// StudioNet block explorer. Overridable via env; defaults to the current
+// GenLayer Studio explorer.
+const EXPLORER_BASE = (
+  import.meta.env.VITE_EXPLORER_BASE ?? "https://explorer-studio.genlayer.com"
+).replace(/\/+$/, "");
+
 export const contractAddress = CONTRACT_ADDRESS;
 export const network = NETWORK;
+export const explorerBase = EXPLORER_BASE;
+
+/** Build an explorer URL for an address or transaction hash. */
+export function explorerUrl(kind: "address" | "tx", value: string): string {
+  return `${EXPLORER_BASE}/${kind}/${value}`;
+}
 
 // --------------------------------------------------------------------------- //
 // Extended transaction wait tuning.
@@ -36,60 +48,111 @@ export const WAIT = {
 
 const LOCAL_KEY = "parametric-insurance:pk";
 
-/** Persist a burner key in the browser so a session survives reloads. */
-function loadOrCreatePrivateKey(): `0x${string}` {
-  try {
-    const stored = localStorage.getItem(LOCAL_KEY);
-    if (stored && /^0x[0-9a-fA-F]{64}$/.test(stored)) return stored as `0x${string}`;
-    const fresh = generatePrivateKey();
-    localStorage.setItem(LOCAL_KEY, fresh);
-    return fresh;
-  } catch {
-    return generatePrivateKey();
-  }
-}
-
 function resolveChain(): GenLayerChain {
   const map = chains as unknown as Record<string, GenLayerChain>;
   return map[NETWORK] ?? map.studionet;
 }
 
 // --------------------------------------------------------------------------- //
-// Client singleton.
+// Wallet / provider state.
+//
+// Two clients are kept intentionally separate:
+//   - readClient  : always available, backed by an ephemeral account, used for
+//                   public view calls so the dashboard renders before connect.
+//   - walletClient: created on connect from the session key and cleared on
+//                   disconnect. Every state-changing write goes through it, so
+//                   disconnecting truly resets the local signing provider.
 // --------------------------------------------------------------------------- //
-let clientSingleton: GenLayerClient<GenLayerChain> | null = null;
+let readClient: GenLayerClient<GenLayerChain> | null = null;
+let walletClient: GenLayerClient<GenLayerChain> | null = null;
 let accountAddress: `0x${string}` | null = null;
+
+/** Read the stored session key without creating one. */
+function readStoredKey(): `0x${string}` | null {
+  try {
+    const stored = localStorage.getItem(LOCAL_KEY);
+    return stored && /^0x[0-9a-fA-F]{64}$/.test(stored)
+      ? (stored as `0x${string}`)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when a session key exists, i.e. the user connected on a prior visit. */
+export function hasStoredKey(): boolean {
+  return readStoredKey() !== null;
+}
 
 export function getAccountAddress(): `0x${string}` | null {
   return accountAddress;
 }
 
-export function getClient(): GenLayerClient<GenLayerChain> {
-  if (clientSingleton) return clientSingleton;
-  const account = createAccount(loadOrCreatePrivateKey());
-  accountAddress = account.address as `0x${string}`;
-  clientSingleton = createClient({ chain: resolveChain(), account });
-  return clientSingleton;
+export function isConnected(): boolean {
+  return walletClient !== null;
 }
 
-/** Rotate to a fresh burner account (clears the stored key). */
-export function resetAccount(): `0x${string}` {
+function getReadClient(): GenLayerClient<GenLayerChain> {
+  if (readClient) return readClient;
+  // Reads are public; an ephemeral throwaway account is sufficient.
+  const account = createAccount(generatePrivateKey());
+  readClient = createClient({ chain: resolveChain(), account });
+  return readClient;
+}
+
+/** The signing client. Throws if the wallet is not connected. */
+function getWalletClient(): GenLayerClient<GenLayerChain> {
+  if (!walletClient) {
+    throw new Error("[EXPECTED] Connect your wallet to sign transactions");
+  }
+  return walletClient;
+}
+
+/**
+ * Connect the session wallet. Restores the persisted key when present,
+ * otherwise generates and stores a fresh one. Returns the active address.
+ */
+export function connectWallet(): `0x${string}` {
+  let key = readStoredKey();
+  if (!key) {
+    key = generatePrivateKey();
+    try {
+      localStorage.setItem(LOCAL_KEY, key);
+    } catch {
+      /* ignore storage errors; the in-memory session still works */
+    }
+  }
+  const account = createAccount(key);
+  accountAddress = account.address as `0x${string}`;
+  walletClient = createClient({ chain: resolveChain(), account });
+  return accountAddress;
+}
+
+/** Disconnect the wallet and reset the local signing provider state. */
+export function disconnectWallet(): void {
+  walletClient = null;
+  accountAddress = null;
+}
+
+/**
+ * Rotate to a brand-new session account: forget the stored key, drop the
+ * provider, and connect fresh. Returns the new address.
+ */
+export function rotateAccount(): `0x${string}` {
   try {
     localStorage.removeItem(LOCAL_KEY);
   } catch {
     /* ignore storage errors */
   }
-  clientSingleton = null;
-  accountAddress = null;
-  getClient();
-  return accountAddress as unknown as `0x${string}`;
+  disconnectWallet();
+  return connectWallet();
 }
 
 // --------------------------------------------------------------------------- //
-// Read helpers (views).
+// Read helpers (views). Always use the public read client.
 // --------------------------------------------------------------------------- //
 async function read<T>(functionName: string, args: unknown[] = []): Promise<T> {
-  const client = getClient();
+  const client = getReadClient();
   const result = await client.readContract({
     address: contractAddress,
     functionName,
@@ -180,7 +243,7 @@ export async function writeAndWait({
   onStage,
   waitForFinalized = true,
 }: WriteOptions): Promise<TxProgress> {
-  const client = getClient();
+  const client = getWalletClient();
 
   onStage?.({ stage: "signing", message: "Signing transaction..." });
 

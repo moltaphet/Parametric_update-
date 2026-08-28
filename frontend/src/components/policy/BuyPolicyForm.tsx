@@ -11,9 +11,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Wallet } from "lucide-react";
 import { TxProgress } from "./TxProgress";
 import { useTx } from "@/hooks/useTx";
 import { useToast } from "@/components/ui/toast";
+import { useWallet } from "@/context/wallet";
 import { tx, checkCoverageEligibility } from "@/lib/genlayer";
 import { genToWei, weiToGen, localInputToIso } from "@/lib/format";
 import { COVERAGE } from "@/lib/contract-meta";
@@ -32,6 +34,7 @@ interface FieldErrors {
 export function BuyPolicyForm({ onCreated }: BuyPolicyFormProps) {
   const { toast } = useToast();
   const { state, run, busy } = useTx();
+  const { connected, connect } = useWallet();
 
   const [flight, setFlight] = useState("");
   const [departure, setDeparture] = useState("");
@@ -261,9 +264,16 @@ export function BuyPolicyForm({ onCreated }: BuyPolicyFormProps) {
 
           <TxProgress state={state} />
 
-          <Button type="submit" className="w-full" size="lg" disabled={busy}>
-            {busy ? "Creating policy..." : "Create policy"}
-          </Button>
+          {connected ? (
+            <Button type="submit" className="w-full" size="lg" disabled={busy}>
+              {busy ? "Creating policy..." : "Create policy"}
+            </Button>
+          ) : (
+            <Button type="button" className="w-full" size="lg" onClick={() => connect()}>
+              <Wallet className="size-4" />
+              Connect wallet to create policy
+            </Button>
+          )}
         </form>
       </CardContent>
     </Card>

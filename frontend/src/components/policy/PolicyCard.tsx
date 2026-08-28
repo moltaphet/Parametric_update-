@@ -8,6 +8,7 @@ import {
   Trophy,
   ExternalLink,
   Timer,
+  Wallet,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { TxProgress } from "./TxProgress";
 import { useTx } from "@/hooks/useTx";
 import { useToast } from "@/components/ui/toast";
+import { useWallet } from "@/context/wallet";
 import { tx } from "@/lib/genlayer";
 import { formatGen, formatTimestamp, relativeTime, shortAddress } from "@/lib/format";
 import { statusMeta, type PolicyRecord } from "@/lib/contract-meta";
@@ -30,6 +32,7 @@ interface PolicyCardProps {
 export function PolicyCard({ policy, isOwn, onSubmitClaim, onChanged }: PolicyCardProps) {
   const { toast } = useToast();
   const { state, run, busy } = useTx();
+  const { connected, connect } = useWallet();
   const [expanded, setExpanded] = useState(false);
 
   const meta = statusMeta(policy.status);
@@ -160,7 +163,11 @@ export function PolicyCard({ policy, isOwn, onSubmitClaim, onChanged }: PolicyCa
         <TxProgress state={state} />
 
         {/* Contextual actions */}
-        {canSubmitClaim || canEvaluate || canReclaim ? (
+        {(canSubmitClaim || canEvaluate || canReclaim) && !connected ? (
+          <Button size="sm" variant="outline" onClick={() => connect()}>
+            <Wallet className="size-4" /> Connect wallet
+          </Button>
+        ) : canSubmitClaim || canEvaluate || canReclaim ? (
           <div className="flex flex-wrap gap-2">
             {canSubmitClaim ? (
               <Button size="sm" onClick={() => onSubmitClaim(policy)} disabled={busy}>
