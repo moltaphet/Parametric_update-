@@ -3,56 +3,51 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
-  ArrowLeftRight,
   Check,
   Copy,
+  Download,
   ExternalLink,
   Loader2,
   LogOut,
-  RefreshCw,
   Wallet,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useWallet } from "@/context/wallet";
 import { useToast } from "@/components/ui/Toast";
-import { Button } from "@/components/ui/Button";
+import { Button, ButtonLink } from "@/components/ui/Button";
 import { explorerUrl } from "@/lib/contract";
 import { shortenAddress } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+const METAMASK_DOWNLOAD = "https://metamask.io/download/";
+
 /**
- * Wallet entry point for the navbar.
+ * Wallet entry point.
  *
- * Renders one of three states:
- *   restoring  - a skeleton, so a returning user never sees "Connect wallet"
- *                flash before their session is restored;
- *   connected  - the truncated address plus an account menu;
- *   otherwise  - a connect control, offering the injected wallet only when a
- *                provider is actually present.
+ * MetaMask is the only connector, so there is no picker: the button either
+ * connects, or - when no extension is detected - becomes an install link. It
+ * never silently substitutes another wallet.
+ *
+ * Three states: restoring (skeleton, so a returning user never sees "Connect"
+ * flash before their session is restored), connected (address plus account
+ * menu), and disconnected.
  */
 export function ConnectButton({ className }: { className?: string }) {
   const wallet = useWallet();
   const { toast } = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Close either popover on outside click or Escape.
+  // Close the menu on outside click or Escape.
   useEffect(() => {
-    if (!menuOpen && !pickerOpen) return;
+    if (!menuOpen) return;
 
     const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) {
-        setMenuOpen(false);
-        setPickerOpen(false);
-      }
+      if (!containerRef.current?.contains(event.target as Node)) setMenuOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setMenuOpen(false);
-        setPickerOpen(false);
-      }
+      if (event.key === "Escape") setMenuOpen(false);
     };
 
     document.addEventListener("pointerdown", onPointerDown);
@@ -61,9 +56,8 @@ export function ConnectButton({ className }: { className?: string }) {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [menuOpen, pickerOpen]);
+  }, [menuOpen]);
 
-  // Reset the transient "copied" tick.
   useEffect(() => {
     if (!copied) return;
     const timer = setTimeout(() => setCopied(false), 1600);
@@ -79,11 +73,6 @@ export function ConnectButton({ className }: { className?: string }) {
       // Clipboard is permission-gated and blocked in some embedded contexts.
       toast({ tone: "error", title: "Could not copy address" });
     }
-  }
-
-  async function handleConnect(kind: "session" | "injected") {
-    setPickerOpen(false);
-    await wallet.connect(kind);
   }
 
   // --- Restoring ---------------------------------------------------------- //
@@ -132,9 +121,7 @@ export function ConnectButton({ className }: { className?: string }) {
             >
               <div className="px-3 py-2.5">
                 <p className="text-[11px] uppercase tracking-wider text-slate-500">
-                  {wallet.connector === "session"
-                    ? "Session wallet"
-                    : `Connected via ${wallet.injectedName}`}
+                  Connected via {wallet.injectedName}
                 </p>
                 <p className="mt-1 break-all font-mono text-xs text-slate-200">
                   {wallet.address}
@@ -148,17 +135,30 @@ export function ConnectButton({ className }: { className?: string }) {
 
               {wallet.isWrongChain && (
                 <div
-                  className="mx-1 mb-1 flex items-start gap-2 rounded-lg border
-                             border-status-pending/25 bg-status-pending/5 px-3 py-2"
+                  className="mx-1 mb-1 rounded-lg border border-status-pending/25
+                             bg-status-pending/5 px-3 py-2"
                 >
-                  <AlertTriangle
-                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-pending"
-                    aria-hidden
-                  />
-                  <p className="text-[11px] leading-relaxed text-slate-400">
-                    Your wallet is on a different network than this app. Switch
-                    networks before sending a transaction.
-                  </p>
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-pending"
+                      aria-hidden
+                    />
+                    <p className="text-[11px] leading-relaxed text-slate-400">
+                      MetaMask is on a different network than this app.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void wallet.switchNetwork();
+                    }}
+                    className="mt-2 w-full rounded-md bg-status-pending/15 px-2 py-1.5
+                               text-[11px] font-medium text-status-pending
+                               transition-colors hover:bg-status-pending/25"
+                  >
+                    Switch to StudioNet
+                  </button>
                 </div>
               )}
 
@@ -168,52 +168,11 @@ export function ConnectButton({ className }: { className?: string }) {
                 {copied ? "Copied" : "Copy address"}
               </MenuItem>
 
-              <MenuItem
-                href={explorerUrl("address", wallet.address)}
-                icon={ExternalLink}
-              >
+              <MenuItem href={explorerUrl("address", wallet.address)} icon={ExternalLink}>
                 View on explorer
               </MenuItem>
 
-              {wallet.connector === "session" && (
-                <MenuItem
-                  onClick={() => {
-                    setMenuOpen(false);
-                    wallet.rotate();
-                  }}
-                  icon={RefreshCw}
-                >
-                  New session address
-                </MenuItem>
-              )}
-
               <div className="my-1 h-px bg-white/[0.06]" />
-
-              {/* Switching without a round trip through the disconnected state.
-                  The session key is retained either way, so switching back
-                  returns the same address. */}
-              {wallet.connector === "session" && wallet.hasInjected && (
-                <MenuItem
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void wallet.switchConnector("injected");
-                  }}
-                  icon={ArrowLeftRight}
-                >
-                  Switch to {wallet.injectedName}
-                </MenuItem>
-              )}
-              {wallet.connector === "injected" && (
-                <MenuItem
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void wallet.switchConnector("session");
-                  }}
-                  icon={ArrowLeftRight}
-                >
-                  Switch to session wallet
-                </MenuItem>
-              )}
 
               <MenuItem
                 onClick={() => {
@@ -232,90 +191,41 @@ export function ConnectButton({ className }: { className?: string }) {
     );
   }
 
+  // --- No extension detected ---------------------------------------------- //
+  // Rendered as an install link rather than a disabled button, so the required
+  // next step is obvious instead of being a dead end.
+  if (!wallet.hasInjected) {
+    return (
+      <ButtonLink href={METAMASK_DOWNLOAD} external size="sm" className={className}>
+        <Download className="h-3.5 w-3.5" aria-hidden />
+        Install MetaMask
+      </ButtonLink>
+    );
+  }
+
   // --- Disconnected ------------------------------------------------------- //
-  // The picker is ALWAYS shown. Previously, when no provider was detected this
-  // branch connected the session wallet directly - which meant any failure to
-  // detect MetaMask (it injects asynchronously) silently locked the user into
-  // the session wallet with no way to choose. Detection is now live, and even
-  // with no wallet present the option is rendered as an install prompt rather
-  // than removed.
   return (
-    <div ref={containerRef} className={cn("relative", className)}>
-      <Button
-        size="sm"
-        onClick={() => setPickerOpen((open) => !open)}
-        disabled={wallet.isConnecting}
-        aria-expanded={pickerOpen}
-        aria-haspopup="menu"
-      >
-        {wallet.isConnecting ? (
-          <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-            Connecting
-          </>
-        ) : (
-          <>
-            <Wallet className="h-3.5 w-3.5" aria-hidden />
-            Connect wallet
-          </>
-        )}
-      </Button>
-
-      <AnimatePresence>
-        {pickerOpen && (
-          <motion.div
-            initial={{ opacity: 0, y: -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -6, scale: 0.98 }}
-            transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-            className="glass-strong absolute right-0 z-50 mt-2 w-72 rounded-xl p-2 shadow-xl"
-            role="menu"
-          >
-            <p className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wider text-slate-500">
-              Choose a wallet
-            </p>
-
-            {wallet.hasInjected ? (
-              <ConnectorOption
-                title={wallet.injectedName}
-                description="Sign with your extension. Adds and switches to StudioNet automatically."
-                onClick={() => handleConnect("injected")}
-              />
-            ) : (
-              // Rendered, not hidden: a missing extension is an install prompt,
-              // never a silent downgrade to the session wallet.
-              <a
-                href="https://metamask.io/download/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex w-full flex-col items-start gap-1 rounded-lg px-3 py-3
-                           text-left transition-colors hover:bg-white/[0.06]"
-                role="menuitem"
-              >
-                <span className="flex items-center gap-2 text-sm font-medium text-slate-300">
-                  MetaMask
-                  <ExternalLink className="h-3 w-3" aria-hidden />
-                </span>
-                <span className="text-xs leading-relaxed text-slate-500">
-                  Not detected. Install it, then reload this page.
-                </span>
-              </a>
-            )}
-
-            <ConnectorOption
-              title="Session wallet"
-              description="No extension needed. Keys are generated and stay in this browser."
-              onClick={() => handleConnect("session")}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
+    <Button
+      size="sm"
+      onClick={() => void wallet.connect()}
+      disabled={wallet.isConnecting}
+      className={className}
+    >
+      {wallet.isConnecting ? (
+        <>
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+          Connecting
+        </>
+      ) : (
+        <>
+          <Wallet className="h-3.5 w-3.5" aria-hidden />
+          Connect {wallet.injectedName}
+        </>
+      )}
+    </Button>
   );
 }
 
-// --------------------------------------------------------------------------- //
-// Local presentational pieces
 // --------------------------------------------------------------------------- //
 function MenuItem({
   children,
@@ -356,38 +266,6 @@ function MenuItem({
     <button type="button" onClick={onClick} className={classes} role="menuitem">
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
       {children}
-    </button>
-  );
-}
-
-function ConnectorOption({
-  title,
-  description,
-  onClick,
-  recommended,
-}: {
-  title: string;
-  description: string;
-  onClick: () => void;
-  recommended?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full flex-col items-start gap-1 rounded-lg px-3 py-3 text-left
-                 transition-colors hover:bg-white/[0.06]"
-      role="menuitem"
-    >
-      <span className="flex items-center gap-2 text-sm font-medium text-slate-100">
-        {title}
-        {recommended && (
-          <span className="rounded bg-accent-400/10 px-1.5 py-0.5 text-[10px] font-normal text-accent-300">
-            Recommended
-          </span>
-        )}
-      </span>
-      <span className="text-xs leading-relaxed text-slate-500">{description}</span>
     </button>
   );
 }

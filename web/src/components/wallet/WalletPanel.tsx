@@ -1,6 +1,6 @@
 "use client";
 
-import { KeyRound, Loader2, Wallet } from "lucide-react";
+import { AlertTriangle, Loader2, Wallet } from "lucide-react";
 import { useWallet } from "@/context/wallet";
 import { ConnectButton } from "./ConnectButton";
 import { explorerUrl } from "@/lib/contract";
@@ -9,9 +9,10 @@ import { shortenAddress } from "@/lib/format";
 /**
  * Dashboard wallet panel.
  *
- * Mirrors the navbar's state machine at full size, and is the surface where the
- * session-wallet custody model is spelled out. A user whose keys live in
- * localStorage needs to be told that plainly, not to discover it later.
+ * Mirrors the navbar's state machine at full size and is where the MetaMask
+ * requirements are spelled out: the StudioNet network and the GenLayer Snap are
+ * both provisioned on connect, and a user should be told that rather than
+ * discovering the prompts unexplained.
  */
 export function WalletPanel() {
   const wallet = useWallet();
@@ -20,7 +21,7 @@ export function WalletPanel() {
     return (
       <div className="glass flex items-center gap-3 rounded-2xl px-6 py-8 text-sm text-slate-400">
         <Loader2 className="h-4 w-4 animate-spin text-accent-400" aria-hidden />
-        Restoring your session...
+        Checking MetaMask...
       </div>
     );
   }
@@ -35,11 +36,13 @@ export function WalletPanel() {
         >
           <Wallet className="h-5 w-5" />
         </div>
-        <h2 className="mt-5 text-lg font-medium text-slate-100">No wallet connected</h2>
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
+        <h2 className="mt-5 text-lg font-medium text-slate-100">
+          {wallet.hasInjected ? "Connect your wallet" : "MetaMask required"}
+        </h2>
+        <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-slate-400">
           {wallet.hasInjected
-            ? `Connect with ${wallet.injectedName}, or use a session wallet that needs no extension.`
-            : "No wallet extension detected. You can install MetaMask, or use a session wallet that needs no install."}
+            ? "Connecting adds the GenLayer StudioNet network and installs the GenLayer Snap, which MetaMask needs in order to sign GenVM transactions. Expect two prompts the first time."
+            : "This app signs with MetaMask. Install the extension, then reload this page."}
         </p>
         <div className="mt-6 flex justify-center">
           <ConnectButton />
@@ -53,9 +56,7 @@ export function WalletPanel() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-wider text-slate-500">
-            {wallet.connector === "session"
-              ? "Session wallet"
-              : `Connected via ${wallet.injectedName}`}
+            Connected via {wallet.injectedName}
           </p>
           <a
             href={explorerUrl("address", wallet.address ?? "")}
@@ -73,16 +74,25 @@ export function WalletPanel() {
         <ConnectButton />
       </div>
 
-      {wallet.connector === "session" && (
-        <div className="mt-6 flex items-start gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-          <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden />
-          <p className="text-xs leading-relaxed text-slate-400">
-            This session key is generated and stored in this browser only. It is
-            never sent anywhere, and clearing site data destroys it. Disconnecting
-            keeps the key so you can reconnect to the same address; choosing
-            &quot;New session address&quot; discards it permanently. Do not hold
-            value here that you cannot afford to lose.
+      {wallet.isWrongChain && (
+        <div className="mt-6 flex flex-wrap items-center gap-3 rounded-xl border
+                        border-status-pending/25 bg-status-pending/5 p-4">
+          <AlertTriangle
+            className="h-4 w-4 shrink-0 text-status-pending"
+            aria-hidden
+          />
+          <p className="min-w-0 flex-1 text-xs leading-relaxed text-slate-400">
+            MetaMask is on a different network. Transactions will fail until you
+            switch back to StudioNet.
           </p>
+          <button
+            type="button"
+            onClick={() => void wallet.switchNetwork()}
+            className="rounded-lg bg-status-pending/15 px-3 py-1.5 text-xs font-medium
+                       text-status-pending transition-colors hover:bg-status-pending/25"
+          >
+            Switch network
+          </button>
         </div>
       )}
     </div>

@@ -355,9 +355,8 @@ export function BuyPolicyForm({
             )}
           </Button>
         ) : (
-          // Renders the shared picker rather than hardcoding a connector. This
-          // previously called connect("session") directly, which bypassed the
-          // wallet choice entirely even when MetaMask was available.
+          // Reuses the shared wallet control so the connect/install/restoring
+          // states stay identical to the navbar.
           <div className="flex flex-col items-center gap-2 pt-1">
             <ConnectButton className="w-full [&>button]:w-full" />
             <p className="text-xs text-slate-500">

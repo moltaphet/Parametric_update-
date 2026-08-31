@@ -1,10 +1,9 @@
 /**
  * Transaction dispatch for the ParametricInsurance contract.
  *
- * Writes go through the wallet client created by lib/wallet.ts, so both
- * connectors (session key and injected provider) work unchanged: the session
- * connector signs locally, the injected connector delegates signing to the
- * extension. Nothing here needs to know which is active.
+ * Writes go through the wallet client created by lib/wallet.ts, which is backed
+ * by MetaMask: genlayer-js delegates signing to the injected provider because
+ * the client's account is an address string rather than a local account object.
  *
  * GenLayer settlement is a two-checkpoint pipeline, not a single confirmation:
  *

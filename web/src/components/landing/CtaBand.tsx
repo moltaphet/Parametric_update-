@@ -28,8 +28,8 @@ export function CtaBand() {
             Insure a flight in <span className="text-gradient">under a minute</span>
           </h2>
           <p className="mx-auto mt-5 max-w-xl text-pretty text-slate-400">
-            Connect a session wallet, pick a flight at least 24 hours out, and
-            set your delay threshold. The contract handles the rest.
+            Connect MetaMask, pick a flight at least 24 hours out, and set your
+            delay threshold. The contract handles the rest.
           </p>
 
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">

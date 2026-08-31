@@ -3,8 +3,8 @@
  *
  * This is the read half of the integration layer, ported from the Vite client's
  * `src/lib/genlayer.ts`. Only public views are exposed here: the landing page
- * never signs anything, so no wallet client is constructed and no session key is
- * touched. The dashboard slice adds the write path on top of this module.
+ * never signs anything, so no wallet client is constructed and MetaMask is not
+ * touched. The write path is layered on top of this module in transactions.ts.
  *
  * Reads go through an ephemeral throwaway account because GenLayer's client
  * requires an account to build a call, but view calls are public and the key is

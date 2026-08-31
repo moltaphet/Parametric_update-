@@ -18,30 +18,29 @@ import {
   getConfiguredChainId,
   getInjectedProviderName,
   restore,
-  rotateSessionAccount,
   subscribeToInjectedAvailability,
   subscribeToProvider,
-  type ConnectorKind,
+  switchToStudioNet,
   type WalletSnapshot,
 } from "@/lib/wallet";
 import { useToast } from "@/components/ui/Toast";
 
 interface WalletContextValue extends WalletSnapshot {
-  /** Convenience flags derived from `status`, so consumers never compare strings. */
+  /** Derived from `status`, so consumers never compare strings. */
   isConnected: boolean;
   isConnecting: boolean;
   /** True until the initial silent restore has settled. */
   isRestoring: boolean;
-  /** True when the connected chain differs from the configured one. */
+  /** True when MetaMask is on a different chain than the app targets. */
   isWrongChain: boolean;
+  /** True once an injected provider has been detected. */
   hasInjected: boolean;
   /** Display name of the detected wallet, e.g. "MetaMask". */
   injectedName: string;
-  connect: (kind: ConnectorKind) => Promise<void>;
-  /** Disconnect the current connector and connect another in one step. */
-  switchConnector: (kind: ConnectorKind) => Promise<void>;
-  disconnect: (options?: { forgetSessionKey?: boolean }) => void;
-  rotate: () => void;
+  connect: () => Promise<void>;
+  disconnect: () => void;
+  /** Ask MetaMask to switch back to StudioNet. */
+  switchNetwork: () => Promise<void>;
 }
 
 const WalletContext = createContext<WalletContextValue | null>(null);
@@ -50,11 +49,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [snapshot, setSnapshot] = useState<WalletSnapshot>(DISCONNECTED);
   const [isRestoring, setIsRestoring] = useState(true);
   const [hasInjected, setHasInjected] = useState(false);
-  const [injectedName, setInjectedName] = useState("Browser wallet");
+  const [injectedName, setInjectedName] = useState("MetaMask");
   const { toast } = useToast();
 
   // Guards every setState that follows an await, so an unmount mid-connect
-  // cannot warn or write into a dead tree.
+  // cannot write into a dead tree.
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -63,12 +62,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Provider detection must run on the client and must stay live.
-  //
-  // A one-shot probe on mount is the bug this replaces: extensions inject
-  // asynchronously, so the probe often runs before MetaMask exists and never
-  // re-checks, permanently hiding the wallet option. This subscription covers
-  // EIP-6963 announcements, the legacy init event, and a bounded poll.
+  // Provider detection must run on the client and must stay live: extensions
+  // inject asynchronously, so a one-shot probe on mount frequently runs before
+  // MetaMask exists and would then hide the connect option for good.
   useEffect(() => {
     return subscribeToInjectedAvailability((available) => {
       setHasInjected(available);
@@ -76,13 +72,9 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  // ----------------------------------------------------------------------- //
-  // Silent restore on mount.
-  //
-  // Never prompts. For the injected connector this reads already-authorized
-  // accounts only, so a user who revoked access returns disconnected instead of
-  // seeing a stale address.
-  // ----------------------------------------------------------------------- //
+  // Silent restore. Never prompts: it only re-checks already-granted
+  // authorization, so revoking access in MetaMask returns the user disconnected
+  // rather than showing a stale address.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -96,26 +88,21 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // ----------------------------------------------------------------------- //
-  // Injected provider events.
-  //
-  // Only meaningful while the injected connector is active: a session wallet is
-  // unaffected by what the extension does.
-  // ----------------------------------------------------------------------- //
+  // Account and chain changes from the extension.
   useEffect(() => {
-    if (snapshot.connector !== "injected") return;
+    if (snapshot.status !== "connected") return;
 
     return subscribeToProvider({
       onAccountsChanged: (accounts) => {
         if (!mounted.current) return;
         if (accounts.length === 0) {
-          // The user disconnected this site from inside the wallet.
+          // The user disconnected this site from inside MetaMask.
           disconnectWallet();
           setSnapshot(DISCONNECTED);
           toast({
             tone: "info",
             title: "Wallet disconnected",
-            description: "Access was revoked from your wallet extension.",
+            description: "Access was revoked from MetaMask.",
           });
           return;
         }
@@ -129,112 +116,85 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         setSnapshot((current) => ({ ...current, chainId }));
       },
     });
-  }, [snapshot.connector, toast]);
+  }, [snapshot.status, toast]);
 
-  // ----------------------------------------------------------------------- //
-  // Actions
-  // ----------------------------------------------------------------------- //
-  const connect = useCallback(
-    async (kind: ConnectorKind) => {
-      setSnapshot((current) => ({ ...current, status: "connecting" }));
-      try {
-        const next = await connectWallet(kind);
-        if (!mounted.current) return;
-        setSnapshot(next);
-        toast({
-          tone: "success",
-          title: "Wallet connected",
-          description:
-            kind === "session"
-              ? "Session wallet ready. Keys stay in this browser."
-              : "Connected through your wallet extension.",
-        });
-      } catch (error) {
-        if (!mounted.current) return;
-        setSnapshot(DISCONNECTED);
-
-        // Map to human copy by code. A rejected prompt is normal behavior and
-        // is reported as info, not as an error the user must act on.
-        const walletError =
-          error instanceof WalletError
-            ? error
-            : new WalletError("UNKNOWN", "Wallet connection failed.");
-
-        if (walletError.code === "USER_REJECTED") {
-          toast({ tone: "info", title: "Connection cancelled" });
-          return;
-        }
-        if (walletError.code === "REQUEST_PENDING") {
-          toast({
-            tone: "info",
-            title: "Check your wallet",
-            description: "A connection request is already open.",
-          });
-          return;
-        }
-        if (walletError.code === "NO_PROVIDER") {
-          toast({
-            tone: "error",
-            title: "No wallet extension found",
-            description: "Use the session wallet instead - it needs no extension.",
-          });
-          return;
-        }
-        toast({
-          tone: "error",
-          title: "Connection failed",
-          description: walletError.message,
-        });
-      }
-    },
-    [toast]
-  );
-
-  const disconnect = useCallback(
-    (options: { forgetSessionKey?: boolean } = {}) => {
-      // Synchronous and total: state resets in the same tick the user clicks,
-      // so the navbar swaps back to "Connect wallet" with no intermediate frame.
-      disconnectWallet(options);
-      setSnapshot(DISCONNECTED);
-      toast({
-        tone: "info",
-        title: options.forgetSessionKey ? "Session wallet erased" : "Wallet disconnected",
-        description: options.forgetSessionKey
-          ? "A new address will be created next time you connect."
-          : undefined,
-      });
-    },
-    [toast]
-  );
-
-  /**
-   * Switch connectors in one action.
-   *
-   * Drops the current client first so a failed or rejected switch cannot leave
-   * the UI showing the old address while the client points somewhere else. The
-   * session key is deliberately kept, so switching back returns the same
-   * address.
-   */
-  const switchConnector = useCallback(
-    async (kind: ConnectorKind) => {
-      disconnectWallet();
-      setSnapshot(DISCONNECTED);
-      await connect(kind);
-    },
-    [connect]
-  );
-
-  const rotate = useCallback(() => {
+  const connect = useCallback(async () => {
+    setSnapshot((current) => ({ ...current, status: "connecting" }));
     try {
-      const next = rotateSessionAccount();
+      const next = await connectWallet();
+      if (!mounted.current) return;
       setSnapshot(next);
       toast({
         tone: "success",
-        title: "New session address",
-        description: "The previous session key was discarded.",
+        title: "Wallet connected",
+        description: "MetaMask is connected to GenLayer StudioNet.",
       });
-    } catch {
-      toast({ tone: "error", title: "Could not rotate the session account" });
+    } catch (error) {
+      if (!mounted.current) return;
+      setSnapshot(DISCONNECTED);
+
+      const walletError =
+        error instanceof WalletError
+          ? error
+          : new WalletError("UNKNOWN", "MetaMask connection failed.");
+
+      // Map to human copy by code. A rejected prompt is normal behavior and is
+      // reported as info, not as an error the user must act on.
+      switch (walletError.code) {
+        case "USER_REJECTED":
+          toast({ tone: "info", title: "Connection cancelled" });
+          return;
+        case "REQUEST_PENDING":
+          toast({
+            tone: "info",
+            title: "Check MetaMask",
+            description: "A request is already open in the extension.",
+          });
+          return;
+        case "NO_PROVIDER":
+          toast({
+            tone: "error",
+            title: "MetaMask not found",
+            description: "Install the MetaMask extension, then reload this page.",
+          });
+          return;
+        case "SNAP_UNSUPPORTED":
+          toast({
+            tone: "error",
+            title: "Snaps not supported",
+            description:
+              "GenLayer signing needs MetaMask Snaps. Update MetaMask and try again.",
+          });
+          return;
+        default:
+          toast({
+            tone: "error",
+            title: "Connection failed",
+            description: walletError.message,
+          });
+      }
+    }
+  }, [toast]);
+
+  const disconnect = useCallback(() => {
+    // Synchronous and total: state resets in the same tick the user clicks, so
+    // the navbar swaps back with no intermediate frame.
+    disconnectWallet();
+    setSnapshot(DISCONNECTED);
+    toast({
+      tone: "info",
+      title: "Wallet disconnected",
+      description: "MetaMask still lists this site; revoke it there to fully remove access.",
+    });
+  }, [toast]);
+
+  const switchNetwork = useCallback(async () => {
+    try {
+      await switchToStudioNet();
+    } catch (error) {
+      const description =
+        error instanceof WalletError ? error.message : "Could not switch network.";
+      toast({ tone: "error", title: "Network switch failed", description });
     }
   }, [toast]);
 
@@ -252,20 +212,10 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       hasInjected,
       injectedName,
       connect,
-      switchConnector,
       disconnect,
-      rotate,
+      switchNetwork,
     };
-  }, [
-    snapshot,
-    isRestoring,
-    hasInjected,
-    injectedName,
-    connect,
-    switchConnector,
-    disconnect,
-    rotate,
-  ]);
+  }, [snapshot, isRestoring, hasInjected, injectedName, connect, disconnect, switchNetwork]);
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }
