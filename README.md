@@ -3,7 +3,7 @@
 > Autonomous flight-delay insurance settled from live web evidence by GenLayer
 > validator consensus, with no claims adjuster and no discretionary review.
 
-`ParametricInsurance` is a GenLayer Intelligent Contract. A policyholder buys
+`ParametricInsurance` is a policyholder buys
 coverage before a flight. If the flight is delayed, they cite an allowlisted
 flight-status page. GenLayer validators then independently render that page,
 extract the delay, and must agree on a payout tier before any money moves.
