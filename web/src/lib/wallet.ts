@@ -113,14 +113,98 @@ function toWalletError(error: unknown, fallback: string): WalletError {
 // --------------------------------------------------------------------------- //
 // Environment probes
 // --------------------------------------------------------------------------- //
+/** EIP-6963 provider announcement payload. */
+interface Eip6963Detail {
+  info: { uuid: string; name: string; icon: string; rdns: string };
+  provider: Eip1193Provider;
+}
+
+// Providers announced via EIP-6963. Keyed by uuid so a wallet that announces
+// more than once does not appear twice.
+const discovered = new Map<string, Eip6963Detail>();
+
+/**
+ * The active injected provider, if any.
+ *
+ * Prefers an EIP-6963 announcement over the legacy `window.ethereum` global.
+ * With several wallets installed they fight over that global, and the last one
+ * to load wins; EIP-6963 is the standard that fixed this.
+ */
 export function getInjectedProvider(): Eip1193Provider | null {
   if (typeof window === "undefined") return null;
-  const provider = (window as { ethereum?: Eip1193Provider }).ethereum;
-  return provider ?? null;
+  const announced = discovered.values().next().value;
+  if (announced) return announced.provider;
+  return (window as { ethereum?: Eip1193Provider }).ethereum ?? null;
 }
 
 export function hasInjectedProvider(): boolean {
   return getInjectedProvider() !== null;
+}
+
+/** Display name of the detected wallet, e.g. "MetaMask". */
+export function getInjectedProviderName(): string {
+  const announced = discovered.values().next().value;
+  if (announced) return announced.info.name;
+  const legacy = (window as { ethereum?: { isMetaMask?: boolean } }).ethereum;
+  return legacy?.isMetaMask ? "MetaMask" : "Browser wallet";
+}
+
+/**
+ * Watch for an injected provider becoming available.
+ *
+ * Detection cannot be a one-shot check on mount. Extensions inject
+ * asynchronously, so a single probe frequently runs *before* MetaMask has
+ * installed itself and then never re-checks - which silently removes the wallet
+ * option from the UI for the rest of the session. Three mechanisms are covered:
+ *
+ *   1. EIP-6963 announcements (the modern standard, and the only correct way to
+ *      handle multiple installed wallets);
+ *   2. the legacy `ethereum#initialized` event;
+ *   3. a short bounded poll, for wallets that do neither.
+ *
+ * Returns an unsubscribe function.
+ */
+export function subscribeToInjectedAvailability(
+  onChange: (available: boolean) => void
+): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  let cancelled = false;
+  const emit = () => {
+    if (!cancelled) onChange(hasInjectedProvider());
+  };
+
+  const onAnnounce = (event: Event) => {
+    const detail = (event as CustomEvent<Eip6963Detail>).detail;
+    if (detail?.provider && detail?.info?.uuid) {
+      discovered.set(detail.info.uuid, detail);
+      emit();
+    }
+  };
+
+  window.addEventListener("eip6963:announceProvider", onAnnounce);
+  // Ask any already-loaded wallet to announce itself.
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+  const onLegacyInit = () => emit();
+  window.addEventListener("ethereum#initialized", onLegacyInit);
+
+  emit();
+
+  // Bounded fallback poll: ~3s, stops as soon as a provider appears.
+  let attempts = 0;
+  const timer = setInterval(() => {
+    attempts += 1;
+    emit();
+    if (hasInjectedProvider() || attempts >= 10) clearInterval(timer);
+  }, 300);
+
+  return () => {
+    cancelled = true;
+    window.removeEventListener("eip6963:announceProvider", onAnnounce);
+    window.removeEventListener("ethereum#initialized", onLegacyInit);
+    clearInterval(timer);
+  };
 }
 
 /**
@@ -239,9 +323,67 @@ async function readInjectedChainId(provider: Eip1193Provider): Promise<number | 
 }
 
 /**
- * @param interactive When true, prompt the user (eth_requestAccounts). When
- *   false, only read already-authorized accounts (eth_accounts). Silent restore
- *   on page load must never prompt, which is the whole reason for this flag.
+ * Point the wallet at GenLayer StudioNet, adding the network if it is unknown.
+ *
+ * Without this the extension stays on whatever chain it was already on, and
+ * every signed transaction targets the wrong network. `wallet_switchEthereumChain`
+ * fails with 4902 when the chain has never been added, which is the signal to
+ * add it first and then switch.
+ *
+ * Failures here are surfaced rather than swallowed: a wallet on the wrong chain
+ * is not a usable connection.
+ */
+async function ensureStudioNetChain(provider: Eip1193Provider): Promise<void> {
+  const chain = resolveChain();
+  const chainIdHex = `0x${Number(chain.id).toString(16)}`;
+
+  let current: string | null = null;
+  try {
+    current = (await provider.request({ method: "eth_chainId" })) as string;
+  } catch {
+    // A provider that cannot report its chain also cannot switch; let the
+    // connection proceed and fail loudly at signing time instead.
+    return;
+  }
+  if (current?.toLowerCase() === chainIdHex.toLowerCase()) return;
+
+  try {
+    await provider.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: chainIdHex }],
+    });
+  } catch (error) {
+    // 4902: unrecognized chain. Some wallets wrap it as -32603.
+    const code = (error as { code?: unknown })?.code;
+    if (code !== 4902 && code !== -32603) {
+      throw toWalletError(error, "Could not switch the wallet to StudioNet.");
+    }
+    try {
+      await provider.request({
+        method: "wallet_addEthereumChain",
+        params: [
+          {
+            chainId: chainIdHex,
+            chainName: chain.name,
+            nativeCurrency: chain.nativeCurrency,
+            rpcUrls: chain.rpcUrls.default.http,
+            blockExplorerUrls: chain.blockExplorers?.default?.url
+              ? [chain.blockExplorers.default.url]
+              : undefined,
+          },
+        ],
+      });
+    } catch (addError) {
+      throw toWalletError(addError, "Could not add StudioNet to the wallet.");
+    }
+  }
+}
+
+/**
+ * @param interactive When true, prompt the user (eth_requestAccounts) and align
+ *   the wallet's network. When false, only read already-authorized accounts
+ *   (eth_accounts) and never prompt - silent restore on page load must not open
+ *   a wallet dialog, which is the whole reason for this flag.
  */
 async function connectInjected(interactive: boolean): Promise<WalletSnapshot> {
   const provider = getInjectedProvider();
@@ -264,6 +406,10 @@ async function connectInjected(interactive: boolean): Promise<WalletSnapshot> {
   if (!accounts || accounts.length === 0) {
     throw new WalletError("NO_ACCOUNTS", "No accounts are authorized in the wallet.");
   }
+
+  // Only align the network on an explicit user-initiated connect. Doing it
+  // during silent restore would pop a wallet dialog on every page load.
+  if (interactive) await ensureStudioNetChain(provider);
 
   const address = accounts[0] as `0x${string}`;
   // Passing the address as a string (not an account object) is what makes

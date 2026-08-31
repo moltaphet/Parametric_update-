@@ -3,6 +3,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
+  ArrowLeftRight,
   Check,
   Copy,
   ExternalLink,
@@ -131,7 +132,9 @@ export function ConnectButton({ className }: { className?: string }) {
             >
               <div className="px-3 py-2.5">
                 <p className="text-[11px] uppercase tracking-wider text-slate-500">
-                  {wallet.connector === "session" ? "Session wallet" : "Browser wallet"}
+                  {wallet.connector === "session"
+                    ? "Session wallet"
+                    : `Connected via ${wallet.injectedName}`}
                 </p>
                 <p className="mt-1 break-all font-mono text-xs text-slate-200">
                   {wallet.address}
@@ -186,6 +189,32 @@ export function ConnectButton({ className }: { className?: string }) {
 
               <div className="my-1 h-px bg-white/[0.06]" />
 
+              {/* Switching without a round trip through the disconnected state.
+                  The session key is retained either way, so switching back
+                  returns the same address. */}
+              {wallet.connector === "session" && wallet.hasInjected && (
+                <MenuItem
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void wallet.switchConnector("injected");
+                  }}
+                  icon={ArrowLeftRight}
+                >
+                  Switch to {wallet.injectedName}
+                </MenuItem>
+              )}
+              {wallet.connector === "injected" && (
+                <MenuItem
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void wallet.switchConnector("session");
+                  }}
+                  icon={ArrowLeftRight}
+                >
+                  Switch to session wallet
+                </MenuItem>
+              )}
+
               <MenuItem
                 onClick={() => {
                   setMenuOpen(false);
@@ -204,31 +233,12 @@ export function ConnectButton({ className }: { className?: string }) {
   }
 
   // --- Disconnected ------------------------------------------------------- //
-  // With no extension present there is only one real choice, so skip the picker
-  // entirely and connect the session wallet directly.
-  if (!wallet.hasInjected) {
-    return (
-      <Button
-        size="sm"
-        onClick={() => handleConnect("session")}
-        disabled={wallet.isConnecting}
-        className={className}
-      >
-        {wallet.isConnecting ? (
-          <>
-            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-            Connecting
-          </>
-        ) : (
-          <>
-            <Wallet className="h-3.5 w-3.5" aria-hidden />
-            Connect wallet
-          </>
-        )}
-      </Button>
-    );
-  }
-
+  // The picker is ALWAYS shown. Previously, when no provider was detected this
+  // branch connected the session wallet directly - which meant any failure to
+  // detect MetaMask (it injects asynchronously) silently locked the user into
+  // the session wallet with no way to choose. Detection is now live, and even
+  // with no wallet present the option is rendered as an install prompt rather
+  // than removed.
   return (
     <div ref={containerRef} className={cn("relative", className)}>
       <Button
@@ -261,16 +271,41 @@ export function ConnectButton({ className }: { className?: string }) {
             className="glass-strong absolute right-0 z-50 mt-2 w-72 rounded-xl p-2 shadow-xl"
             role="menu"
           >
+            <p className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wider text-slate-500">
+              Choose a wallet
+            </p>
+
+            {wallet.hasInjected ? (
+              <ConnectorOption
+                title={wallet.injectedName}
+                description="Sign with your extension. Adds and switches to StudioNet automatically."
+                onClick={() => handleConnect("injected")}
+              />
+            ) : (
+              // Rendered, not hidden: a missing extension is an install prompt,
+              // never a silent downgrade to the session wallet.
+              <a
+                href="https://metamask.io/download/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex w-full flex-col items-start gap-1 rounded-lg px-3 py-3
+                           text-left transition-colors hover:bg-white/[0.06]"
+                role="menuitem"
+              >
+                <span className="flex items-center gap-2 text-sm font-medium text-slate-300">
+                  MetaMask
+                  <ExternalLink className="h-3 w-3" aria-hidden />
+                </span>
+                <span className="text-xs leading-relaxed text-slate-500">
+                  Not detected. Install it, then reload this page.
+                </span>
+              </a>
+            )}
+
             <ConnectorOption
               title="Session wallet"
-              description="No extension needed. Keys stay in this browser."
-              recommended
+              description="No extension needed. Keys are generated and stay in this browser."
               onClick={() => handleConnect("session")}
-            />
-            <ConnectorOption
-              title="Browser wallet"
-              description="Requires the GenLayer Snap for signing on Studio networks."
-              onClick={() => handleConnect("injected")}
             />
           </motion.div>
         )}

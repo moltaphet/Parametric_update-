@@ -9,9 +9,9 @@ import {
   Gauge,
   Loader2,
   Plane,
-  Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import { ConnectButton } from "@/components/wallet/ConnectButton";
 import { Field, Input } from "@/components/ui/Field";
 import { TxProgress } from "./TxProgress";
 import { useTransaction } from "@/hooks/useTransaction";
@@ -355,16 +355,15 @@ export function BuyPolicyForm({
             )}
           </Button>
         ) : (
-          <Button
-            type="button"
-            size="lg"
-            className="w-full"
-            onClick={() => wallet.connect("session")}
-            disabled={wallet.isConnecting}
-          >
-            <Wallet className="h-4 w-4" aria-hidden />
-            Connect wallet to create policy
-          </Button>
+          // Renders the shared picker rather than hardcoding a connector. This
+          // previously called connect("session") directly, which bypassed the
+          // wallet choice entirely even when MetaMask was available.
+          <div className="flex flex-col items-center gap-2 pt-1">
+            <ConnectButton className="w-full [&>button]:w-full" />
+            <p className="text-xs text-slate-500">
+              Connect a wallet to create a policy
+            </p>
+          </div>
         )}
       </div>
     </form>

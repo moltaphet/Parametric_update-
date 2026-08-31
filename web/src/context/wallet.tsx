@@ -16,9 +16,10 @@ import {
   connect as connectWallet,
   disconnect as disconnectWallet,
   getConfiguredChainId,
-  hasInjectedProvider,
+  getInjectedProviderName,
   restore,
   rotateSessionAccount,
+  subscribeToInjectedAvailability,
   subscribeToProvider,
   type ConnectorKind,
   type WalletSnapshot,
@@ -34,7 +35,11 @@ interface WalletContextValue extends WalletSnapshot {
   /** True when the connected chain differs from the configured one. */
   isWrongChain: boolean;
   hasInjected: boolean;
+  /** Display name of the detected wallet, e.g. "MetaMask". */
+  injectedName: string;
   connect: (kind: ConnectorKind) => Promise<void>;
+  /** Disconnect the current connector and connect another in one step. */
+  switchConnector: (kind: ConnectorKind) => Promise<void>;
   disconnect: (options?: { forgetSessionKey?: boolean }) => void;
   rotate: () => void;
 }
@@ -45,6 +50,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const [snapshot, setSnapshot] = useState<WalletSnapshot>(DISCONNECTED);
   const [isRestoring, setIsRestoring] = useState(true);
   const [hasInjected, setHasInjected] = useState(false);
+  const [injectedName, setInjectedName] = useState("Browser wallet");
   const { toast } = useToast();
 
   // Guards every setState that follows an await, so an unmount mid-connect
@@ -57,10 +63,17 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Provider detection must run on the client: `window` does not exist during
-  // the server render, and reading it during render would desync hydration.
+  // Provider detection must run on the client and must stay live.
+  //
+  // A one-shot probe on mount is the bug this replaces: extensions inject
+  // asynchronously, so the probe often runs before MetaMask exists and never
+  // re-checks, permanently hiding the wallet option. This subscription covers
+  // EIP-6963 announcements, the legacy init event, and a bounded poll.
   useEffect(() => {
-    setHasInjected(hasInjectedProvider());
+    return subscribeToInjectedAvailability((available) => {
+      setHasInjected(available);
+      if (available) setInjectedName(getInjectedProviderName());
+    });
   }, []);
 
   // ----------------------------------------------------------------------- //
@@ -194,6 +207,23 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     [toast]
   );
 
+  /**
+   * Switch connectors in one action.
+   *
+   * Drops the current client first so a failed or rejected switch cannot leave
+   * the UI showing the old address while the client points somewhere else. The
+   * session key is deliberately kept, so switching back returns the same
+   * address.
+   */
+  const switchConnector = useCallback(
+    async (kind: ConnectorKind) => {
+      disconnectWallet();
+      setSnapshot(DISCONNECTED);
+      await connect(kind);
+    },
+    [connect]
+  );
+
   const rotate = useCallback(() => {
     try {
       const next = rotateSessionAccount();
@@ -220,11 +250,22 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
         snapshot.chainId !== null &&
         snapshot.chainId !== configuredChainId,
       hasInjected,
+      injectedName,
       connect,
+      switchConnector,
       disconnect,
       rotate,
     };
-  }, [snapshot, isRestoring, hasInjected, connect, disconnect, rotate]);
+  }, [
+    snapshot,
+    isRestoring,
+    hasInjected,
+    injectedName,
+    connect,
+    switchConnector,
+    disconnect,
+    rotate,
+  ]);
 
   return <WalletContext.Provider value={value}>{children}</WalletContext.Provider>;
 }

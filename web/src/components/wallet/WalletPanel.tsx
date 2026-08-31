@@ -38,8 +38,8 @@ export function WalletPanel() {
         <h2 className="mt-5 text-lg font-medium text-slate-100">No wallet connected</h2>
         <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-400">
           {wallet.hasInjected
-            ? "Connect your browser wallet, or use a session wallet that needs no extension."
-            : "No wallet extension detected. A session wallet works here with no install - StudioNet is gasless."}
+            ? `Connect with ${wallet.injectedName}, or use a session wallet that needs no extension.`
+            : "No wallet extension detected. You can install MetaMask, or use a session wallet that needs no install."}
         </p>
         <div className="mt-6 flex justify-center">
           <ConnectButton />
@@ -53,7 +53,9 @@ export function WalletPanel() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-wider text-slate-500">
-            {wallet.connector === "session" ? "Session wallet" : "Browser wallet"}
+            {wallet.connector === "session"
+              ? "Session wallet"
+              : `Connected via ${wallet.injectedName}`}
           </p>
           <a
             href={explorerUrl("address", wallet.address ?? "")}
