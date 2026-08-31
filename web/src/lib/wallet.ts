@@ -1,65 +1,71 @@
 /**
- * Wallet core - MetaMask (EIP-1193) only.
+ * Wallet core.
  *
- * The in-browser session wallet was removed. Signing now always goes through the
- * user's extension: genlayer-js routes `eth_sendTransaction` / `personal_sign`
- * to the injected provider when the client's `account` is an address string
- * rather than a local account object, which is what this module relies on.
+ * Design rules, each of which fixes a concrete failure in the previous version:
  *
- * Signing GenVM transactions on a Studio chain additionally requires the
- * GenLayer MetaMask Snap. genlayer-js 1.1.8 does not export its Snap installer,
- * so `ensureGenLayerSnap` below performs the same `wallet_getSnaps` /
- * `wallet_requestSnaps` handshake directly.
+ *  1. Enumerate every injected wallet, never guess one. EIP-6963 exists because
+ *     multiple extensions overwrite `window.ethereum`; picking "the first one
+ *     announced" and labelling it MetaMask is how a Rabby user ends up staring
+ *     at a MetaMask prompt that never appears.
+ *
+ *  2. Pin the provider on connect. Every later call - chain switch, event
+ *     subscription, snap check - uses the exact object the user connected with,
+ *     never a fresh lookup that may resolve to a different extension.
+ *
+ *  3. Never fight the extension. The GenLayer Snap is attempted best-effort for
+ *     wallets that support Snaps; a wallet that does not (Rabby, Brave, most
+ *     non-MetaMask wallets) still connects instead of being locked out.
+ *
+ *  4. Fail quietly and once. Everything throws a single typed WalletError; the
+ *     UI maps the code to one message. No cascading rethrows.
  *
  * React bindings live in context/wallet.tsx; this module holds no React state.
  */
 
-import { createClient } from "genlayer-js";
+import { createAccount, createClient, generatePrivateKey } from "genlayer-js";
 import * as chains from "genlayer-js/chains";
 import type { GenLayerChain, GenLayerClient } from "genlayer-js/types";
 import { NETWORK } from "./contract";
 
-/**
- * Marks that the user connected before, so the app may silently re-check
- * authorization on load. Versioned so a format change can invalidate old state
- * rather than misread it.
- */
-const PREFERENCE_KEY = "parametric.wallet.connector.v1";
-
-/** Published id of the GenLayer wallet Snap. */
+const LAST_WALLET_KEY = "parametric.wallet.last.v2";
+const SESSION_KEY = "parametric.wallet.session.v2";
 const GENLAYER_SNAP_ID = "npm:genlayer-wallet-plugin";
 
-export type WalletStatus = "disconnected" | "connecting" | "connected";
+/** `session` is only offered when no extension is installed. */
+export type WalletKind = "injected" | "session";
 
 export interface WalletSnapshot {
-  status: WalletStatus;
+  status: "disconnected" | "connecting" | "connected";
   address: `0x${string}` | null;
   chainId: number | null;
+  kind: WalletKind | null;
+  /** Wallet name for display, e.g. "Rabby". Null for the session wallet. */
+  walletName: string | null;
+  /** EIP-6963 uuid of the connected wallet, when it announced one. */
+  walletId: string | null;
 }
 
 export const DISCONNECTED: WalletSnapshot = {
   status: "disconnected",
   address: null,
   chainId: null,
+  kind: null,
+  walletName: null,
+  walletId: null,
 };
 
 // --------------------------------------------------------------------------- //
 // Errors
-//
-// Every failure surfaces as a WalletError with a stable `code`, so the UI can
-// branch on the code and never has to string-match a provider's message.
 // --------------------------------------------------------------------------- //
 export type WalletErrorCode =
   | "NO_PROVIDER"
   | "USER_REJECTED"
   | "REQUEST_PENDING"
   | "NO_ACCOUNTS"
-  | "SNAP_UNSUPPORTED"
   | "UNKNOWN";
 
 export class WalletError extends Error {
   readonly code: WalletErrorCode;
-
   constructor(code: WalletErrorCode, message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "WalletError";
@@ -67,32 +73,25 @@ export class WalletError extends Error {
   }
 }
 
-/** The subset of EIP-1193 this module uses. */
-interface Eip1193Provider {
-  request(args: { method: string; params?: unknown }): Promise<unknown>;
-  on?(event: string, handler: (...args: never[]) => void): void;
-  removeListener?(event: string, handler: (...args: never[]) => void): void;
-}
-
 /**
- * Translate an EIP-1193 rejection into a WalletError.
+ * Normalize any provider rejection into a typed error.
  *
- * 4001 and -32002 are the two codes that matter for a connect button: the user
- * closed the prompt, or a prompt is already open behind the browser window.
- * Both are normal user behavior, not faults.
+ * 4001 (user closed the prompt) and -32002 (a prompt is already open, often
+ * behind the browser window) are ordinary user behavior, not faults, and the UI
+ * reports them as information rather than errors.
  */
-function toWalletError(error: unknown, fallback: string): WalletError {
+function asWalletError(error: unknown, fallback: string): WalletError {
   if (error instanceof WalletError) return error;
   const code = (error as { code?: unknown })?.code;
   if (code === 4001) {
-    return new WalletError("USER_REJECTED", "Request was rejected in MetaMask.", {
+    return new WalletError("USER_REJECTED", "Request rejected in your wallet.", {
       cause: error,
     });
   }
   if (code === -32002) {
     return new WalletError(
       "REQUEST_PENDING",
-      "A MetaMask request is already open. Check the extension.",
+      "A request is already open. Check your wallet extension.",
       { cause: error }
     );
   }
@@ -100,99 +99,88 @@ function toWalletError(error: unknown, fallback: string): WalletError {
 }
 
 // --------------------------------------------------------------------------- //
-// Provider discovery
+// Provider discovery (EIP-6963, with a legacy fallback)
 // --------------------------------------------------------------------------- //
+interface Eip1193Provider {
+  request(args: { method: string; params?: unknown }): Promise<unknown>;
+  on?(event: string, handler: (...args: never[]) => void): void;
+  removeListener?(event: string, handler: (...args: never[]) => void): void;
+}
 
-/** EIP-6963 provider announcement payload. */
-interface Eip6963Detail {
-  info: { uuid: string; name: string; icon: string; rdns: string };
+export interface WalletOption {
+  id: string;
+  name: string;
+  icon: string | null;
   provider: Eip1193Provider;
 }
 
-const discovered = new Map<string, Eip6963Detail>();
+const announced = new Map<string, WalletOption>();
 
-/**
- * The active injected provider, if any.
- *
- * Prefers an EIP-6963 announcement over the legacy `window.ethereum` global:
- * with several wallets installed they fight over that global and the last one
- * to load wins, which is the problem EIP-6963 exists to solve.
- */
-export function getInjectedProvider(): Eip1193Provider | null {
+function legacyOption(): WalletOption | null {
   if (typeof window === "undefined") return null;
-  const announced = discovered.values().next().value;
-  if (announced) return announced.provider;
-  return (window as { ethereum?: Eip1193Provider }).ethereum ?? null;
+  const eth = (window as { ethereum?: Eip1193Provider & { isMetaMask?: boolean; isRabby?: boolean } })
+    .ethereum;
+  if (!eth) return null;
+  // Only used when nothing announced via EIP-6963, so the name is best-effort.
+  const name = eth.isRabby ? "Rabby" : eth.isMetaMask ? "MetaMask" : "Browser wallet";
+  return { id: "legacy", name, icon: null, provider: eth };
 }
 
-export function hasInjectedProvider(): boolean {
-  return getInjectedProvider() !== null;
+/** Every injected wallet currently known, newest discovery last. */
+export function listWallets(): WalletOption[] {
+  if (announced.size > 0) return [...announced.values()];
+  const legacy = legacyOption();
+  return legacy ? [legacy] : [];
 }
 
-/** Display name of the detected wallet, e.g. "MetaMask". */
-export function getInjectedProviderName(): string {
-  const announced = discovered.values().next().value;
-  if (announced) return announced.info.name;
-  const legacy = (window as { ethereum?: { isMetaMask?: boolean } }).ethereum;
-  return legacy?.isMetaMask ? "MetaMask" : "Browser wallet";
+export function hasInjectedWallet(): boolean {
+  return listWallets().length > 0;
 }
 
 /**
- * Watch for an injected provider becoming available.
+ * Subscribe to the set of available wallets.
  *
- * Detection cannot be a one-shot check on mount: extensions inject
- * asynchronously, so a single probe often runs before MetaMask exists and then
- * never re-checks, permanently hiding the connect option. Three arrival paths
- * are covered - EIP-6963 announcements, the legacy `ethereum#initialized`
- * event, and a short bounded poll for wallets that do neither.
+ * Purely event-driven: announce-listener plus the legacy `ethereum#initialized`
+ * event. The previous implementation also ran a 300ms polling interval, which
+ * re-emitted constantly and was a source of redundant renders; EIP-6963 already
+ * guarantees an announcement whenever a wallet becomes ready.
  */
-export function subscribeToInjectedAvailability(
-  onChange: (available: boolean) => void
-): () => void {
+export function subscribeToWallets(onChange: (wallets: WalletOption[]) => void): () => void {
   if (typeof window === "undefined") return () => {};
 
-  let cancelled = false;
-  const emit = () => {
-    if (!cancelled) onChange(hasInjectedProvider());
-  };
+  const emit = () => onChange(listWallets());
 
   const onAnnounce = (event: Event) => {
-    const detail = (event as CustomEvent<Eip6963Detail>).detail;
-    if (detail?.provider && detail?.info?.uuid) {
-      discovered.set(detail.info.uuid, detail);
-      emit();
-    }
+    const detail = (
+      event as CustomEvent<{
+        info: { uuid: string; name: string; icon: string };
+        provider: Eip1193Provider;
+      }>
+    ).detail;
+    if (!detail?.provider || !detail?.info?.uuid) return;
+    announced.set(detail.info.uuid, {
+      id: detail.info.uuid,
+      name: detail.info.name,
+      icon: detail.info.icon ?? null,
+      provider: detail.provider,
+    });
+    emit();
   };
 
   window.addEventListener("eip6963:announceProvider", onAnnounce);
+  window.addEventListener("ethereum#initialized", emit);
+  // Ask wallets that loaded before this listener existed to re-announce.
   window.dispatchEvent(new Event("eip6963:requestProvider"));
-
-  const onLegacyInit = () => emit();
-  window.addEventListener("ethereum#initialized", onLegacyInit);
-
   emit();
 
-  let attempts = 0;
-  const timer = setInterval(() => {
-    attempts += 1;
-    emit();
-    if (hasInjectedProvider() || attempts >= 10) clearInterval(timer);
-  }, 300);
-
   return () => {
-    cancelled = true;
     window.removeEventListener("eip6963:announceProvider", onAnnounce);
-    window.removeEventListener("ethereum#initialized", onLegacyInit);
-    clearInterval(timer);
+    window.removeEventListener("ethereum#initialized", emit);
   };
 }
 
 // --------------------------------------------------------------------------- //
-// Storage (guarded)
-//
-// localStorage can throw rather than return null - Safari private mode and some
-// embedded webviews raise SecurityError on access - so every call is wrapped.
-// A hostile storage environment degrades to a per-page-load session.
+// Storage (guarded: Safari private mode and some webviews throw on access)
 // --------------------------------------------------------------------------- //
 function safeGet(key: string): string | null {
   try {
@@ -201,7 +189,6 @@ function safeGet(key: string): string | null {
     return null;
   }
 }
-
 function safeSet(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value);
@@ -209,7 +196,6 @@ function safeSet(key: string, value: string): void {
     /* non-fatal */
   }
 }
-
 function safeRemove(key: string): void {
   try {
     window.localStorage.removeItem(key);
@@ -231,47 +217,41 @@ export function getConfiguredChainId(): number {
 }
 
 // --------------------------------------------------------------------------- //
-// Live client
+// Connection state
 //
-// Module scope rather than React state: a viem client is not renderable, and
-// holding it in state causes needless re-renders.
+// The provider is pinned here on connect. Looking it up again later is what
+// allowed events and chain switches to bind to a different extension than the
+// one the user actually connected with.
 // --------------------------------------------------------------------------- //
-let walletClient: GenLayerClient<GenLayerChain> | null = null;
+let client: GenLayerClient<GenLayerChain> | null = null;
+let activeProvider: Eip1193Provider | null = null;
 
 export function getWalletClient(): GenLayerClient<GenLayerChain> | null {
-  return walletClient;
+  return client;
 }
 
-/** Throwing accessor for write paths that require a connected wallet. */
 export function requireWalletClient(): GenLayerClient<GenLayerChain> {
-  if (!walletClient) {
-    throw new WalletError("NO_ACCOUNTS", "Connect MetaMask to sign transactions.");
+  if (!client) {
+    throw new WalletError("NO_ACCOUNTS", "Connect a wallet to sign transactions.");
   }
-  return walletClient;
+  return client;
 }
-
-// --------------------------------------------------------------------------- //
-// Network and Snap provisioning
-// --------------------------------------------------------------------------- //
 
 /**
- * Point the wallet at GenLayer StudioNet, adding the network if unknown.
+ * Align the wallet with StudioNet. Best-effort by design.
  *
- * Without this the extension stays on whatever chain it was already on and
- * every signed transaction targets the wrong network.
- * `wallet_switchEthereumChain` fails with 4902 when the chain has never been
- * added, which is the signal to add it first and then switch.
+ * A failure here is reported to the caller but must not abort a connection:
+ * being on the wrong network is a recoverable state the UI already surfaces,
+ * whereas refusing to connect leaves the user with nothing to act on.
  */
-async function ensureStudioNetChain(provider: Eip1193Provider): Promise<void> {
+async function trySwitchChain(provider: Eip1193Provider): Promise<void> {
   const chain = resolveChain();
   const chainIdHex = `0x${Number(chain.id).toString(16)}`;
 
-  let current: string | null = null;
+  let current: string | undefined;
   try {
     current = (await provider.request({ method: "eth_chainId" })) as string;
   } catch {
-    // A provider that cannot report its chain also cannot switch; let the
-    // connection proceed and fail loudly at signing time instead.
     return;
   }
   if (current?.toLowerCase() === chainIdHex.toLowerCase()) return;
@@ -282,75 +262,71 @@ async function ensureStudioNetChain(provider: Eip1193Provider): Promise<void> {
       params: [{ chainId: chainIdHex }],
     });
   } catch (error) {
-    // 4902: unrecognized chain. Some wallets wrap it as -32603.
+    // 4902 (and -32603 from wallets that wrap it) means the chain is unknown.
     const code = (error as { code?: unknown })?.code;
-    if (code !== 4902 && code !== -32603) {
-      throw toWalletError(error, "Could not switch MetaMask to StudioNet.");
-    }
-    try {
-      await provider.request({
-        method: "wallet_addEthereumChain",
-        params: [
-          {
-            chainId: chainIdHex,
-            chainName: chain.name,
-            nativeCurrency: chain.nativeCurrency,
-            rpcUrls: chain.rpcUrls.default.http,
-            blockExplorerUrls: chain.blockExplorers?.default?.url
-              ? [chain.blockExplorers.default.url]
-              : undefined,
-          },
-        ],
-      });
-    } catch (addError) {
-      throw toWalletError(addError, "Could not add StudioNet to MetaMask.");
-    }
+    if (code !== 4902 && code !== -32603) throw asWalletError(error, "Network switch failed.");
+    await provider.request({
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId: chainIdHex,
+          chainName: chain.name,
+          nativeCurrency: chain.nativeCurrency,
+          rpcUrls: chain.rpcUrls.default.http,
+          blockExplorerUrls: chain.blockExplorers?.default?.url
+            ? [chain.blockExplorers.default.url]
+            : undefined,
+        },
+      ],
+    });
   }
 }
 
 /**
- * Ensure the GenLayer Snap is installed.
+ * Install the GenLayer Snap if this wallet supports Snaps.
  *
- * MetaMask cannot sign GenVM transactions on its own - the Snap supplies that
- * capability. This performs the same handshake genlayer-js does internally
- * (its version is not exported): list installed snaps, and request installation
- * only when missing, so a returning user is not prompted on every connect.
+ * MetaMask needs it to sign GenVM transactions. Wallets without Snaps support
+ * answer `wallet_getSnaps` with -32601, and that is treated as "not applicable"
+ * rather than an error - hard-failing here is what locked Rabby users out.
  *
- * A wallet without Snaps support reports an unknown method; that is surfaced as
- * SNAP_UNSUPPORTED so the UI can explain the requirement rather than failing
- * later at signing time with an opaque error.
+ * Returns true when the Snap is present and usable.
  */
-async function ensureGenLayerSnap(provider: Eip1193Provider): Promise<void> {
-  let installed: Record<string, { id?: string }> = {};
+async function trySetupSnap(provider: Eip1193Provider): Promise<boolean> {
+  let installed: Record<string, { id?: string }>;
   try {
     installed = (await provider.request({ method: "wallet_getSnaps" })) as Record<
       string,
       { id?: string }
     >;
-  } catch (error) {
-    const code = (error as { code?: unknown })?.code;
-    // -32601 method not found: this wallet has no Snaps support at all.
-    if (code === -32601) {
-      throw new WalletError(
-        "SNAP_UNSUPPORTED",
-        "This wallet does not support MetaMask Snaps, which GenLayer needs for signing."
-      );
-    }
-    throw toWalletError(error, "Could not read installed MetaMask Snaps.");
+  } catch {
+    return false; // No Snaps support. Not fatal.
   }
 
-  const present = Object.values(installed ?? {}).some(
-    (snap) => snap?.id === GENLAYER_SNAP_ID
-  );
-  if (present) return;
+  if (Object.values(installed ?? {}).some((s) => s?.id === GENLAYER_SNAP_ID)) return true;
 
   try {
     await provider.request({
       method: "wallet_requestSnaps",
       params: { [GENLAYER_SNAP_ID]: {} },
     });
+    return true;
   } catch (error) {
-    throw toWalletError(error, "Could not install the GenLayer MetaMask Snap.");
+    // A rejected Snap prompt must still surface as a rejection so the UI does
+    // not claim success; anything else is downgraded to "unavailable".
+    if ((error as { code?: unknown })?.code === 4001) {
+      throw asWalletError(error, "Snap installation rejected.");
+    }
+    return false;
+  }
+}
+
+async function readChainId(provider: Eip1193Provider): Promise<number | null> {
+  try {
+    const hex = (await provider.request({ method: "eth_chainId" })) as string;
+    const parsed = Number.parseInt(hex, 16);
+    return Number.isNaN(parsed) ? null : parsed;
+  } catch {
+    return null;
   }
 }
 
@@ -359,142 +335,167 @@ async function ensureGenLayerSnap(provider: Eip1193Provider): Promise<void> {
 // --------------------------------------------------------------------------- //
 
 /**
- * @param interactive When true, prompt the user (`eth_requestAccounts`), align
- *   the network, and provision the Snap. When false, only read
- *   already-authorized accounts (`eth_accounts`) and prompt for nothing -
- *   silent restore on page load must never open a wallet dialog.
+ * Connect a specific injected wallet.
+ *
+ * @param walletId EIP-6963 uuid. Omit to use the only installed wallet; with
+ *   several installed the caller must choose, so the user is never silently
+ *   connected to an extension they did not pick.
  */
-async function connectInjected(interactive: boolean): Promise<WalletSnapshot> {
-  const provider = getInjectedProvider();
-  if (!provider) {
-    throw new WalletError(
-      "NO_PROVIDER",
-      "MetaMask was not detected in this browser."
-    );
+export async function connectInjected(walletId?: string): Promise<WalletSnapshot> {
+  const wallets = listWallets();
+  if (wallets.length === 0) {
+    throw new WalletError("NO_PROVIDER", "No wallet extension detected.");
   }
+
+  const chosen = walletId ? wallets.find((w) => w.id === walletId) : wallets[0];
+  if (!chosen) throw new WalletError("NO_PROVIDER", "That wallet is no longer available.");
 
   let accounts: string[];
   try {
-    accounts = (await provider.request({
-      method: interactive ? "eth_requestAccounts" : "eth_accounts",
-    })) as string[];
+    accounts = (await chosen.provider.request({ method: "eth_requestAccounts" })) as string[];
   } catch (error) {
-    throw toWalletError(error, "MetaMask connection failed.");
+    throw asWalletError(error, "Wallet connection failed.");
+  }
+  if (!accounts?.length) {
+    throw new WalletError("NO_ACCOUNTS", "No accounts were authorized.");
   }
 
-  if (!accounts || accounts.length === 0) {
-    throw new WalletError("NO_ACCOUNTS", "No accounts are authorized in MetaMask.");
-  }
-
-  if (interactive) {
-    await ensureStudioNetChain(provider);
-    await ensureGenLayerSnap(provider);
+  // Network and Snap are best-effort: a user rejection propagates, anything
+  // else leaves the connection intact and is surfaced by the wrong-chain UI.
+  try {
+    await trySwitchChain(chosen.provider);
+    await trySetupSnap(chosen.provider);
+  } catch (error) {
+    if (error instanceof WalletError && error.code === "USER_REJECTED") throw error;
   }
 
   const address = accounts[0] as `0x${string}`;
-  // Passing the address as a string (not an account object) is what makes
+  activeProvider = chosen.provider;
+  // An address string (rather than a local account object) is what makes
   // genlayer-js delegate signing to the injected provider.
-  walletClient = createClient({ chain: resolveChain(), account: address });
-  safeSet(PREFERENCE_KEY, "injected");
-
-  let chainId: number | null = null;
-  try {
-    const hex = (await provider.request({ method: "eth_chainId" })) as string;
-    const parsed = Number.parseInt(hex, 16);
-    chainId = Number.isNaN(parsed) ? null : parsed;
-  } catch {
-    chainId = null;
-  }
+  client = createClient({ chain: resolveChain(), account: address });
+  safeSet(LAST_WALLET_KEY, chosen.id);
 
   return {
     status: "connected",
     address,
-    chainId: chainId ?? getConfiguredChainId(),
+    chainId: (await readChainId(chosen.provider)) ?? getConfiguredChainId(),
+    kind: "injected",
+    walletName: chosen.name,
+    walletId: chosen.id,
   };
 }
 
-/** Connect explicitly, in response to a user gesture. */
-export function connect(): Promise<WalletSnapshot> {
-  return connectInjected(true);
+/**
+ * Connect an in-browser keypair.
+ *
+ * Offered only as a fallback when no extension is installed, and never
+ * restored automatically - it must not stand in for a wallet the user meant to
+ * use. The key is persisted so the same address is returned next time.
+ */
+export function connectSession(): WalletSnapshot {
+  let key = safeGet(SESSION_KEY);
+  if (!key || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
+    key = generatePrivateKey() as string;
+    safeSet(SESSION_KEY, key);
+  }
+
+  const account = createAccount(key as `0x${string}`);
+  activeProvider = null;
+  client = createClient({ chain: resolveChain(), account });
+  safeSet(LAST_WALLET_KEY, "session");
+
+  return {
+    status: "connected",
+    address: account.address as `0x${string}`,
+    chainId: getConfiguredChainId(),
+    kind: "session",
+    walletName: null,
+    walletId: null,
+  };
 }
 
 /**
- * Restore a previous connection on page load, without prompting.
+ * Silently restore a previous injected connection.
  *
- * Returns null when there is nothing to restore, which is the normal
- * first-visit path and is not an error. Authorization is re-checked with
- * `eth_accounts`, so a user who revoked access in MetaMask correctly comes back
- * disconnected instead of seeing a stale address.
+ * Uses `eth_accounts`, which never prompts, so a user who revoked access
+ * returns disconnected rather than seeing a stale address. The session wallet
+ * is deliberately not restored: doing so previously left users connected to the
+ * in-browser wallet with no obvious route to their extension.
  */
 export async function restore(): Promise<WalletSnapshot | null> {
-  if (!safeGet(PREFERENCE_KEY)) return null;
+  const last = safeGet(LAST_WALLET_KEY);
+  if (!last || last === "session") return null;
+
+  const chosen = listWallets().find((w) => w.id === last);
+  if (!chosen) return null;
 
   try {
-    if (!hasInjectedProvider()) {
-      // The extension was uninstalled or disabled since the last visit.
-      safeRemove(PREFERENCE_KEY);
-      return null;
-    }
-    return await connectInjected(false);
+    const accounts = (await chosen.provider.request({ method: "eth_accounts" })) as string[];
+    if (!accounts?.length) return null;
+
+    const address = accounts[0] as `0x${string}`;
+    activeProvider = chosen.provider;
+    client = createClient({ chain: resolveChain(), account: address });
+
+    return {
+      status: "connected",
+      address,
+      chainId: (await readChainId(chosen.provider)) ?? getConfiguredChainId(),
+      kind: "injected",
+      walletName: chosen.name,
+      walletId: chosen.id,
+    };
   } catch {
-    // Restore is best-effort: any failure means "start disconnected", never a
-    // thrown error into a page-load effect.
-    safeRemove(PREFERENCE_KEY);
+    // Restore is best-effort; failure just means "start disconnected".
     return null;
   }
 }
 
-/**
- * Disconnect and reset local state.
- *
- * Synchronous, total, and never throws. Note that a dApp cannot revoke its own
- * permission in MetaMask - only the user can, from the extension - so this
- * clears *our* session and reconnecting may not re-prompt. That is expected
- * EIP-1193 behavior, and the UI says so.
- */
+/** Disconnect and reset local state. Never throws. */
 export function disconnect(): void {
-  walletClient = null;
-  safeRemove(PREFERENCE_KEY);
+  client = null;
+  activeProvider = null;
+  safeRemove(LAST_WALLET_KEY);
 }
 
 /**
- * Subscribe to account and chain changes.
+ * Subscribe to account and chain changes on the CONNECTED provider.
  *
- * Returns an unsubscribe function. Safe to call with no provider present, in
- * which case it is a no-op, so callers need no branching.
+ * Binding to the pinned provider rather than re-resolving one is what stops a
+ * second installed extension from emitting events for a wallet the user is not
+ * connected to.
  */
-export function subscribeToProvider(handlers: {
+export function subscribeToActiveProvider(handlers: {
   onAccountsChanged: (accounts: string[]) => void;
   onChainChanged: (chainId: number) => void;
 }): () => void {
-  const provider = getInjectedProvider();
+  const provider = activeProvider;
   if (!provider?.on || !provider.removeListener) return () => {};
 
-  const accountsHandler = (...args: never[]) => {
+  const onAccounts = (...args: never[]) =>
     handlers.onAccountsChanged((args[0] as unknown as string[]) ?? []);
-  };
-  const chainHandler = (...args: never[]) => {
+  const onChain = (...args: never[]) => {
     const parsed = Number.parseInt(args[0] as unknown as string, 16);
     if (!Number.isNaN(parsed)) handlers.onChainChanged(parsed);
   };
 
-  provider.on("accountsChanged", accountsHandler);
-  provider.on("chainChanged", chainHandler);
+  provider.on("accountsChanged", onAccounts);
+  provider.on("chainChanged", onChain);
 
   return () => {
-    provider.removeListener?.("accountsChanged", accountsHandler);
-    provider.removeListener?.("chainChanged", chainHandler);
+    provider.removeListener?.("accountsChanged", onAccounts);
+    provider.removeListener?.("chainChanged", onChain);
   };
 }
 
 /** Rebuild the client for a new address (after accountsChanged). */
-export function adoptInjectedAddress(address: `0x${string}`): void {
-  walletClient = createClient({ chain: resolveChain(), account: address });
+export function adoptAddress(address: `0x${string}`): void {
+  client = createClient({ chain: resolveChain(), account: address });
 }
 
-/** Ask MetaMask to switch back to StudioNet, for the wrong-chain UI. */
+/** Ask the connected wallet to switch back to StudioNet. */
 export async function switchToStudioNet(): Promise<void> {
-  const provider = getInjectedProvider();
-  if (!provider) throw new WalletError("NO_PROVIDER", "MetaMask was not detected.");
-  await ensureStudioNetChain(provider);
+  if (!activeProvider) throw new WalletError("NO_PROVIDER", "No wallet connected.");
+  await trySwitchChain(activeProvider);
 }
