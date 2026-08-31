@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+/* =========================================================================== *
+ * Design tokens - dark-mode-first fintech / web3.
+ *
+ * Tailwind v4 is configured CSS-first: every token below becomes a utility
+ * (bg-obsidian-900, text-accent-400, ...) with no JS config file. The palette is
+ * deliberately narrow - two neutral ramps and one accent - so the neon reads as
+ * signal rather than decoration.
+ * =========================================================================== */
+@theme {
+  /* Deep obsidian ramp. 950 is the page floor; 800 lifts panels off it. */
+  --color-obsidian-950: #04060c;
+  --color-obsidian-900: #070b14;
+  --color-obsidian-850: #0a101c;
+  --color-obsidian-800: #0e1524;
+  --color-obsidian-700: #16203a;
+
+  /* Cyan accent ramp, used for focus, live data, and primary action. */
+  --color-accent-300: #67e8f9;
+  --color-accent-400: #22d3ee;
+  --color-accent-500: #06b6d4;
+  --color-accent-600: #0891b2;
+
+  /* Secondary accent for gradients and depth cues only - never for state. */
+  --color-halo-400: #38bdf8;
+  --color-halo-500: #0ea5e9;
+
+  /* Semantic status colors, matched to the contract's policy lifecycle. */
+  --color-status-active: #22d3ee;
+  --color-status-pending: #fbbf24;
+  --color-status-paid: #34d399;
+  --color-status-rejected: #94a3b8;
+  --color-status-failed: #fb7185;
+
+  /* Typography ramp. */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", monospace;
+
+  /* Motion. One easing curve everywhere keeps the app feeling like one object. */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* =========================================================================== *
+ * Base layer
+ * =========================================================================== */
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    /* Prevent horizontal scroll from the oversized hero glow elements. */
+    overflow-x: hidden;
+  }
+
+  body {
+    background-color: var(--color-obsidian-950);
+    color: #e2e8f0;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Visible, on-brand focus ring for keyboard users on every interactive node. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent-400);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-accent-400) 30%, transparent);
+    color: #f8fafc;
+  }
+
+  /* Respect the OS setting. The 3D scene also reads this and freezes its
+     animation loop; see components/three/HeroScene.tsx. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* =========================================================================== *
+ * Composed utilities
+ *
+ * These encode the three visual motifs the design leans on. Defining them once
+ * keeps glass panels and glow treatments identical everywhere they appear.
+ * =========================================================================== */
+@utility glass {
+  background-color: color-mix(in oklab, white 4%, transparent);
+  backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid color-mix(in oklab, white 8%, transparent);
+}
+
+@utility glass-strong {
+  background-color: color-mix(in oklab, white 6%, transparent);
+  backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid color-mix(in oklab, white 12%, transparent);
+}
+
+/* Soft radial bloom used behind the hero and section headers. */
+@utility bloom {
+  background-image: radial-gradient(
+    ellipse at center,
+    color-mix(in oklab, var(--color-accent-500) 22%, transparent) 0%,
+    transparent 70%
+  );
+}
+
+/* Accent gradient text for the single most important line on a screen. */
+@utility text-gradient {
+  background-image: linear-gradient(
+    100deg,
+    #f8fafc 0%,
+    var(--color-accent-300) 45%,
+    var(--color-halo-400) 100%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+/* 1px hairline grid, used as a faint substrate behind dark sections. */
+@utility grid-substrate {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, white 4%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, white 4%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 64px 64px;
+}

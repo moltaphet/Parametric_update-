@@ -1,0 +1,102 @@
+name: CI
+
+# Contract validation and the direct-mode test suite run on every push and pull
+# request. The integration suite is NOT part of that gate: it deploys to
+# StudioNet, which is a shared, rate-limited, gasless network, so running it on
+# every commit would be both flaky and antisocial. It is exposed as a manual
+# job instead (Actions -> CI -> Run workflow).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: "Also run the StudioNet integration suite"
+        type: boolean
+        default: false
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches the locally verified toolchain. requirements.txt pins the packages;
+  # this pins the interpreter they were verified against.
+  PYTHON_VERSION: "3.14"
+
+jobs:
+  validate:
+    name: Contract validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # AST safety rules and public ABI validation. Also the check that the
+      # contract class is discoverable and the dependency header resolves.
+      - name: genvm-lint check
+        run: genvm-lint check contracts/parametric_insurance.py
+
+      # SDK-aware type checking. This is the authoritative type gate; a plain
+      # editor Pyright run reports false positives because the GenVM SDK is not
+      # on the ambient import path.
+      - name: genvm-lint typecheck
+        run: genvm-lint typecheck contracts/parametric_insurance.py
+
+  test:
+    name: Direct-mode tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # pytest.ini sets testpaths = tests/direct, so this runs the in-memory
+      # suite only: state machine, accounting invariants, timeline boundaries,
+      # the source allowlist, the repository source boundary, and the ASCII
+      # boundary. No network access is required.
+      - name: pytest (direct mode)
+        run: pytest -v
+
+  integration:
+    name: StudioNet integration (manual)
+    runs-on: ubuntu-latest
+    # Only on an explicit manual dispatch with the box ticked. StudioNet is
+    # gasless, so no funded signer or secret is needed.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_integration
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: gltest (StudioNet, full consensus)
+        run: gltest tests/integration/ -v -s --network studionet

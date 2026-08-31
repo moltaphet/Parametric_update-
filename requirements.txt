@@ -1,0 +1,22 @@
+# Python toolchain for the ParametricInsurance intelligent contract.
+#
+# Versions are pinned to exactly what the verified test run used, so a reviewer
+# reproduces the same 120-test result rather than whatever resolves today.
+# Verified on Python 3.14.3 (see .github/workflows/ci.yml).
+#
+#   python -m pip install -r requirements.txt
+
+# GenLayer client library: RPC, accounts, calldata encoding.
+genlayer-py==0.16.3
+
+# Test framework for GenLayer contracts. Provides the `gltest` runner and the
+# `gltest_direct` pytest plugin that supplies the direct_* fixtures used by
+# tests/direct (direct_vm, direct_deploy, direct_owner, direct_alice, ...).
+genlayer-test==0.29.2
+
+# Provides the `genvm-lint` binary used for `check` (AST safety + ABI
+# validation) and `typecheck` (SDK-aware type checking).
+genvm-linter==0.11.0
+
+# Test runner.
+pytest==9.0.3

@@ -17,7 +17,7 @@ const NETWORK = (import.meta.env.VITE_GENLAYER_NETWORK ?? "studionet") as
 // StudioNet block explorer. Overridable via env; defaults to the current
 // GenLayer Studio explorer.
 const EXPLORER_BASE = (
-  import.meta.env.VITE_EXPLORER_BASE ?? "https://explorer-studio.genlayer.com"
+  import.meta.env.VITE_EXPLORER_BASE ?? "https://genlayer-explorer.vercel.app"
 ).replace(/\/+$/, "");
 
 export const contractAddress = CONTRACT_ADDRESS;
