@@ -86,7 +86,7 @@ Three parties, with a deliberately narrow contract boundary:
 ```text
 +------------------+        +---------------------------+        +-------------------+
 |  Client          |        |  ParametricInsurance      |        |  Allowlisted      |
-|  (web/, frontend/)|  -->  |  (GenLayer contract)      |  -->   |  status providers |
+|  (web/)          |  -->   |  (GenLayer contract)      |  -->   |  status providers |
 |                  |        |                           |        |                   |
 | - wallet session |        | - underwriting            |        | - raw evidence    |
 | - tx submission  |        | - policy state machine    |        |   (HTML pages)    |
@@ -418,12 +418,8 @@ is shared and rate-limited.
 
 ## Running the frontend
 
-There are two clients. **`web/` is the current one.**
-
-### web/ - Next.js (current)
-
-Next.js App Router, Tailwind v4, Framer Motion, and React Three Fiber, with an
-interactive 3D landing page.
+`web/` is the only client. Next.js App Router, Tailwind v4, Framer Motion, and
+React Three Fiber, with an interactive 3D landing page.
 
 ```bash
 cd web
@@ -441,26 +437,26 @@ Do not run `npm run build` while `npm run dev` is live. Both write to `.next`,
 and the build replaces assets the dev server is still serving, leaving the page
 unstyled until the dev server restarts.
 
-Implemented: 3D landing page, wallet connect/disconnect (session and injected
-connectors), policy purchase, pool funding, and policy tracking. Claim
-submission and evaluation are not yet wired into `web/`; `frontend/` has working
-implementations to port. See [`web/README.md`](web/README.md) for the component
-map, design-system tokens, and wallet/transaction notes.
+**Wallet: MetaMask only.** Connecting adds the GenLayer StudioNet network and
+installs the GenLayer Snap (`npm:genlayer-wallet-plugin`), which MetaMask needs
+to sign GenVM transactions. Expect two extra prompts on first connect; later
+connects show neither. There is no in-browser fallback wallet.
 
-### frontend/ - Vite (legacy)
+Implemented: 3D landing page, MetaMask connect/disconnect, policy purchase, pool
+funding, and policy tracking. Claim submission and evaluation are not yet wired
+up. See [`web/README.md`](web/README.md) for the component map, design-system
+tokens, and wallet/transaction notes.
 
-The original React + Vite client. Feature-complete for the dashboard flow and
-retained as the reference implementation for the claim path until `web/` reaches
-parity.
+> The original Vite client was removed once `web/` reached parity on the
+> purchase flow. Its claim-path components are still useful as a reference and
+> remain in git history:
+>
+> ```bash
+> git show 91c293c:frontend/src/components/policy/ClaimDialog.tsx
+> git show 91c293c:frontend/src/components/policy/PolicyCard.tsx
+> ```
 
-```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
-```
-
-Neither client has a committed test suite. Adding Vitest plus React Testing
+There is no committed frontend test suite. Adding Vitest plus React Testing
 Library over `web/src/lib` and `web/src/hooks`, and an `npm ci && npm run build`
 job in CI, is the recommended next step.
 
@@ -545,13 +541,15 @@ deployments/
   studionet.json                canonical deployment record
 docs/
   architecture.md               design document
-frontend/                       Vite client (legacy, feature-complete dashboard)
 tests/direct/
   test_parametric_insurance.py  state machine, accounting, boundaries, allowlist
   test_contract_source_boundary.py
 tests/integration/
   test_parametric_insurance_integration.py
-web/                            Next.js client (current, 3D landing page)
+web/                            Next.js client (the only frontend)
+  src/                          app router, components, hooks, lib
+  public/logo-mark-512.png      brand mark (transparency-keyed)
+  brand/logo-source.jpeg        original art, not served
 LICENSE                         MIT
 requirements.txt                pinned Python toolchain
 gltest.config.yaml
