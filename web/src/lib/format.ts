@@ -103,7 +103,7 @@ export function localInputToIso(local: string): string {
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-/** Shorten an address for display: 0x8Ed1...D896. */
+/** Shorten an address for display: 0xd9a6...6f50. */
 export function shortenAddress(address: string | null | undefined): string {
   if (!address || address.length < 10) return address ?? "";
   return `${address.slice(0, 6)}...${address.slice(-4)}`;

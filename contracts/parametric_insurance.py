@@ -46,7 +46,7 @@ State machine
     ACTIVE ------------- reclaim_expired ---> EXPIRED        (window closed)
     CLAIM_SUBMITTED ---- evaluate_claim ----> SETTLED_PAID   (delay >= threshold and before close)
     CLAIM_SUBMITTED ---- evaluate_claim ----> REJECTED       (delay < threshold)
-    CLAIM_SUBMITTED ---- evaluate_claim ----> FAILED         (flight not on source)
+    CLAIM_SUBMITTED ---- evaluate_claim ----> FAILED         (unconfirmed: flight absent, or a missing / malformed / network-delayed extraction - premium refunded)
     CLAIM_SUBMITTED ---- reclaim_expired ---> EXPIRED        (holder cleanup after close)
     ACTIVE / CLAIM_SUBMITTED -- expire_stale_claim --> EXPIRED (permissionless cleanup after close)
 
@@ -351,9 +351,13 @@ class ParametricInsurance(gl.Contract):
         """Observe the status page under consensus and settle the claim.
 
         The web render + model extraction run inside ``run_nondet_unsafe`` so the
-        leader and validators must agree on the (verdict, tier). Transient and
-        model failures raise (fail-closed) and leave the claim retryable; only a
-        clean, agreed decision moves money.
+        leader and validators must agree on the (verdict, tier). Extraction is
+        strictly fail-closed: a missing, blank, network-delayed, malformed, or
+        ambiguous observation cannot confirm a delay, so it collapses to an
+        UNCONFIRMED verdict that releases the reserve and refunds the premium
+        on-chain (the same terminal path as a flight absent from the source).
+        Only a clean, agreed extraction can move a payout, so this method always
+        drives the policy to a terminal state - it never strands a claim.
         """
         policy = self._require_policy(policy_id)
         if policy.status != CLAIM_SUBMITTED:
@@ -429,8 +433,10 @@ class ParametricInsurance(gl.Contract):
             self._assert_liquidity_invariant()
             return REJECTED
 
-        # VERDICT_EXTERNAL: the source could not confirm the flight. Refund the
-        # premium to the holder - the failure is not their fault.
+        # VERDICT_EXTERNAL: the extraction could not confirm the flight - either
+        # it is absent from the source, or the observation was missing, blank,
+        # network-delayed, malformed, or ambiguous (fail-closed). Refund the
+        # premium to the holder; the failure to confirm is not their fault.
         refund = int(policy.premium_atto)
         self._remove_unreserved_liquidity(refund)
         self._credit(policy.holder, refund)
@@ -1096,21 +1102,61 @@ def _build_prompt(
 
 
 def _parse_extraction(response: object) -> dict:
-    """Defensively parse the model's JSON extraction into typed fields."""
+    """Defensively parse the model's JSON extraction into typed fields.
+
+    Fail-closed. An extraction is only treated as a confirmed, found flight when
+    the model states so explicitly *and* supplies a usable delay figure. Any
+    incomplete or ambiguous payload - a missing ``found`` signal, or a found,
+    non-cancelled flight with no delay reported at all - is reported as an
+    unconfirmed observation (``found=False`` with ``incomplete=True``). That
+    routes the claim through ``_derive_verdict`` to ``VERDICT_EXTERNAL`` and on
+    to the automated premium refund, so a broken or partial payload can never
+    silently keep the holder's premium by defaulting to a zero-delay rejection.
+
+    Only genuinely malformed *types* (a non-dict response, or a delay field that
+    is present but not numeric) raise ``ERROR_LLM``: those signal a misbehaving
+    model and must force validator rotation rather than settle either way.
+    """
     if not isinstance(response, dict):
         raise gl.vm.UserError(f"{ERROR_LLM} Non-dict response: {type(response)}")
 
-    found = _coerce_bool(response.get("found", True))
+    # Fail-closed: without an explicit found signal the flight is unconfirmed.
+    if "found" not in response:
+        return {
+            "found": False,
+            "cancelled": False,
+            "delay_minutes": 0,
+            "incomplete": True,
+        }
+
+    found = _coerce_bool(response.get("found"))
     cancelled = _coerce_bool(response.get("cancelled", False))
+
+    # A flight the source does not confirm routes straight to the refund path;
+    # no delay figure is required or trusted.
+    if not found:
+        return {"found": False, "cancelled": cancelled, "delay_minutes": 0}
+
+    # A cancellation is a complete, terminal signal on its own.
+    if cancelled:
+        return {"found": True, "cancelled": True, "delay_minutes": 0}
 
     raw_delay = response.get("delay_minutes")
     if raw_delay is None:
         for alt in ("delay", "minutes", "delay_mins"):
-            if alt in response:
+            if alt in response and response[alt] is not None:
                 raw_delay = response[alt]
                 break
+    # Fail-closed: a found, non-cancelled flight with no delay reported is an
+    # incomplete extraction. Refund rather than assume an on-time (zero-delay)
+    # flight, which would reject the claim and keep the premium.
     if raw_delay is None:
-        raw_delay = 0
+        return {
+            "found": False,
+            "cancelled": False,
+            "delay_minutes": 0,
+            "incomplete": True,
+        }
     try:
         delay = max(0, int(round(float(str(raw_delay).strip()))))
     except (ValueError, TypeError):
@@ -1144,34 +1190,68 @@ def _derive_verdict(parsed: dict, threshold: int) -> dict:
     return {"verdict": VERDICT_PAID, "tier": 2, "delay": delay}
 
 
+def _unconfirmed(reason: str) -> dict:
+    """A fail-closed 'could not confirm' decision that routes to the refund path.
+
+    Every extraction failure - a missing or blank page, a network error, a
+    malformed or ambiguous model response - collapses to this single verdict
+    (``VERDICT_EXTERNAL``, tier 0). ``evaluate_claim`` treats it exactly like a
+    flight that is genuinely absent from the source: the reserve is released and
+    the premium is refunded to the holder on-chain. Because the reason string is
+    normalized (never carries raw page bytes or exception detail that could
+    differ across validators), two validators that both fail to confirm produce
+    byte-identical decisions and reach consensus on the refund.
+    """
+    return {
+        "verdict": VERDICT_EXTERNAL,
+        "tier": 0,
+        "delay": 0,
+        "observed": ("unconfirmed: " + reason)[:512],
+    }
+
+
 def _observe_and_classify(
     url: str, flight_number: str, departure_time: str, threshold: int
 ) -> dict:
     """Render the source page, extract the delay under a fence, and classify.
 
-    Runs inside the non-deterministic block. Raises classified errors so the
-    validator can compare failures; returns a verdict dict on success.
+    Runs inside the non-deterministic block and is strictly fail-closed: the web
+    render and the model extraction are wrapped so that ANY failure - a missing
+    or blank page, a network/render error, a malformed or ambiguous model
+    payload - is caught here and reported as an UNCONFIRMED observation rather
+    than raised. That routes ``evaluate_claim`` into the automated premium
+    refund path instead of leaving the claim stranded. Only a clean, fully
+    parsed extraction can produce a PAID or REJECTED verdict, so a broken or
+    delayed oracle can never manufacture a payout and never silently keeps the
+    premium.
     """
-    page = gl.nondet.web.render(url, mode="text")
-    if page is None:
-        raise gl.vm.UserError(f"{ERROR_TRANSIENT} Empty page response")
+    try:
+        page = gl.nondet.web.render(url, mode="text")
+        if page is None:
+            return _unconfirmed("empty page response")
 
-    content = str(page)
-    if content.strip() == "":
-        raise gl.vm.UserError(f"{ERROR_TRANSIENT} Blank page content")
-    if len(content) > _MAX_CONTENT_CHARS:
-        content = content[:_MAX_CONTENT_CHARS]
+        content = str(page)
+        if content.strip() == "":
+            return _unconfirmed("blank page content")
+        if len(content) > _MAX_CONTENT_CHARS:
+            content = content[:_MAX_CONTENT_CHARS]
 
-    token = _fence_token(content)
-    prompt = _build_prompt(content, token, flight_number, departure_time)
-    response = gl.nondet.exec_prompt(prompt, response_format="json")
+        token = _fence_token(content)
+        prompt = _build_prompt(content, token, flight_number, departure_time)
+        response = gl.nondet.exec_prompt(prompt, response_format="json")
+        parsed = _parse_extraction(response)
+    except Exception:
+        # Fail-closed: a network-delayed, missing, or malformed extraction is
+        # never allowed to revert-and-strand or to settle a payout. It becomes a
+        # refund. The reason is a fixed string so validators stay deterministic.
+        return _unconfirmed("extraction failed or was malformed")
 
-    parsed = _parse_extraction(response)
     decision = _derive_verdict(parsed, threshold)
+    incomplete = bool(parsed.get("incomplete", False))
     decision["observed"] = (
         f"verdict={decision['verdict']} tier={decision['tier']} "
         f"delay={decision['delay']} found={parsed['found']} "
-        f"cancelled={parsed['cancelled']}"
+        f"cancelled={parsed['cancelled']} incomplete={incomplete}"
     )
     return decision
 

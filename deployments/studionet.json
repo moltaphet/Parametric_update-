@@ -2,16 +2,19 @@
   "contract": "ParametricInsurance",
   "source": "contracts/parametric_insurance.py",
   "network": "studionet",
-  "address": "0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896",
-  "explorerUrl": "https://genlayer-explorer.vercel.app/address/0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896",
+  "address": "0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50",
+  "deploymentTx": "0x3100f20c46c0481c4c4259ea01de86bb5bdeecdb558315e4d29ec62fd51ee1c9",
+  "deployer": "0x14193a5f930a72692a239df9839574889acf9795",
+  "deployedAt": "2026-09-02",
+  "explorerUrl": "https://genlayer-explorer.vercel.app/address/0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50",
   "status": "live",
   "currentSourceMatch": true,
-  "sourceVerification": "Retrieved with `genlayer code` on 2026-08-22 and matched contracts/parametric_insurance.py (identical apart from trailing blank lines in the CLI output).",
-  "schemaVerification": "Retrieved with `genlayer schema` on 2026-08-22; 18 methods (8 view, 10 write), including expire_stale_claim.",
+  "sourceVerification": "Deployed on 2026-09-02 with `genlayer deploy` (CLI 0.39.1) directly from contracts/parametric_insurance.py; deployment reached MAJORITY_AGREE (5/5 validators AGREE) and status ACCEPTED.",
+  "schemaVerification": "Retrieved with `genlayer schema` on 2026-09-02; 18 methods (8 view, 10 write), including expire_stale_claim. A get_stats view call returns a fresh zeroed pool with liquidity_invariant true.",
   "methods": {
     "total": 18,
     "view": 8,
     "write": 10
   },
-  "notes": "Current StudioNet deployment with deadline-gated evaluation, permissionless stale-policy cleanup that refunds only the holder, direct PAID-verdict native transfers, per-policy reserve locks, and explicit total/reserved/unreserved accounting. Deployment transaction, deployer, and timestamp were not provided for this redeploy and are intentionally omitted rather than carried over from the prior deployment."
+  "notes": "Current StudioNet deployment carrying the fail-closed extraction upgrade: any missing, blank, network-delayed, malformed, or ambiguous flight-status observation collapses to an unconfirmed verdict that releases the reserve and refunds the premium on-chain, so evaluate_claim always reaches a terminal state. Also includes deadline-gated evaluation, permissionless stale-policy cleanup that refunds only the holder, direct PAID-verdict native transfers, per-policy reserve locks, and explicit total/reserved/unreserved accounting. Supersedes 0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896."
 }

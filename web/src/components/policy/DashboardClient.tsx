@@ -5,6 +5,7 @@ import { WalletPanel } from "@/components/wallet/WalletPanel";
 import { BuyPolicyForm } from "./BuyPolicyForm";
 import { FundPoolCard } from "./FundPoolCard";
 import { PolicyList } from "./PolicyList";
+import { RefundCard } from "./RefundCard";
 import { useContractStats } from "@/hooks/useContractStats";
 
 /**
@@ -61,8 +62,9 @@ export function DashboardClient() {
         <div className="space-y-6">
           <BuyPolicyForm onCreated={handleWrite} unreservedAtto={unreservedAtto} />
           <FundPoolCard unreservedAtto={unreservedAtto} onFunded={handleWrite} />
+          <RefundCard refreshToken={refreshToken} onWithdrawn={handleWrite} />
         </div>
-        <PolicyList refreshToken={refreshToken} />
+        <PolicyList refreshToken={refreshToken} onAction={handleWrite} />
       </div>
     </div>
   );

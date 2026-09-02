@@ -10,8 +10,8 @@ extract the delay, and must agree on a payout tier before any money moves.
 Settlement is an exact-wei native transfer; a claim that cannot be confirmed
 refunds the premium instead.
 
-[![Contract](https://img.shields.io/badge/StudioNet-0x8Ed1...D896-22d3ee)](https://genlayer-explorer.vercel.app/address/0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896)
-[![Tests](https://img.shields.io/badge/tests-120%20passing-34d399)](tests/direct)
+[![Contract](https://img.shields.io/badge/StudioNet-0xd9a6...6f50-22d3ee)](https://genlayer-explorer.vercel.app/address/0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50)
+[![Tests](https://img.shields.io/badge/tests-146%20passing-34d399)](tests/direct)
 [![License](https://img.shields.io/badge/license-MIT-94a3b8)](LICENSE)
 
 ---
@@ -39,7 +39,7 @@ refunds the premium instead.
 | Field | Value |
 |-------|-------|
 | Network | StudioNet (gasless) |
-| Address | [`0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896`](https://genlayer-explorer.vercel.app/address/0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896) |
+| Address | [`0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50`](https://genlayer-explorer.vercel.app/address/0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50) |
 | Interface | 18 methods (8 view, 10 write) |
 | Source match | Verified byte-for-byte against `contracts/parametric_insurance.py` |
 | Status | Live and exercised end to end: pool funded, policies created through the UI under full consensus |
@@ -66,7 +66,7 @@ retrieved with `genlayer code` match this repository exactly.
 
 ```bash
 genlayer network set studionet
-C=0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896
+C=0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50
 
 genlayer code   "$C"        # retrieve deployed source
 genlayer schema "$C"        # retrieve the ABI
@@ -492,7 +492,7 @@ curl -s -X POST https://studio.genlayer.com/api \
 Then seed the pool from the dashboard's underwriting panel, or directly:
 
 ```bash
-genlayer write 0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896 fund_pool --value 120000000000000000000
+genlayer write 0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50 fund_pool --value 120000000000000000000
 ```
 
 Seeding 120 GEN supports policies up to a ~10.9 GEN premium. Remember that only

@@ -19,7 +19,7 @@ import type { GenLayerChain, GenLayerClient } from "genlayer-js/types";
 // Configuration
 // --------------------------------------------------------------------------- //
 export const CONTRACT_ADDRESS = (process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ??
-  "0x8Ed11A2C8bae3584110FecF9D7Ac3325ca2aD896") as `0x${string}`;
+  "0xd9a6647ba30e81904Fade28F62D7a0475FBf6f50") as `0x${string}`;
 
 export const NETWORK = (process.env.NEXT_PUBLIC_GENLAYER_NETWORK ??
   "studionet") as "studionet" | "testnetAsimov" | "localnet";

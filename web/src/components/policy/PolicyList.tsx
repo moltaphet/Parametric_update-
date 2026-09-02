@@ -7,6 +7,7 @@ import { getAllPolicies, type PolicyRecord } from "@/lib/contract";
 import { STATUS_META, type PolicyStatus } from "@/lib/coverage";
 import { formatGen } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { PolicyActions } from "./PolicyActions";
 
 /**
  * The connected account's policies.
@@ -16,7 +17,14 @@ import { cn } from "@/lib/utils";
  * That is fine at this scale and is the honest tradeoff to note if the pool
  * ever grows large - it is O(policies) reads per refresh.
  */
-export function PolicyList({ refreshToken }: { refreshToken: number }) {
+export function PolicyList({
+  refreshToken,
+  onAction,
+}: {
+  refreshToken: number;
+  /** Called after any per-policy lifecycle write so the dashboard can refresh. */
+  onAction?: () => void;
+}) {
   const wallet = useWallet();
   const [policies, setPolicies] = useState<PolicyRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -85,7 +93,7 @@ export function PolicyList({ refreshToken }: { refreshToken: number }) {
           <h2 className="text-lg font-medium text-slate-100">Your policies</h2>
           <p className="mt-1 text-sm text-slate-500">
             {policies === null
-              ? " "
+              ? "\u00a0"
               : `${policies.length} held by this address`}
           </p>
         </div>
@@ -171,6 +179,12 @@ export function PolicyList({ refreshToken }: { refreshToken: number }) {
                       </dd>
                     </div>
                   </dl>
+
+                  <p className="mt-3 text-xs leading-relaxed text-slate-500">
+                    {meta.description}
+                  </p>
+
+                  <PolicyActions policy={policy} onAction={onAction} />
                 </li>
               );
             })}

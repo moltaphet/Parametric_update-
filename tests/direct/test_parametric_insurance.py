@@ -988,19 +988,141 @@ def test_external_flight_not_found_fails_and_refunds(
     assert transfers == []
 
 
-def test_transient_blank_page_reverts(direct_vm, direct_deploy, direct_alice, direct_bob):
+# --------------------------------------------------------------------------- #
+# evaluate_claim - fail-closed extraction routes to the refund path
+#
+# An incomplete or ambiguous model payload must never silently keep the holder's
+# premium by defaulting to a zero-delay rejection. Instead it is treated as an
+# unconfirmed observation and routed to FAILED, which queues a premium refund -
+# exactly the deterministic path a genuine "flight not found" takes.
+# --------------------------------------------------------------------------- #
+def _mock_raw_extraction(direct_vm, raw_json: str, body: str = "flight status page"):
+    """Reset mocks, then mock the render and a raw (possibly partial) JSON body."""
+    direct_vm.clear_mocks()
+    mock_flight_page(direct_vm, body)
+    direct_vm.mock_llm(r".*extraction engine.*", raw_json)
+
+
+@pytest.mark.parametrize(
+    "raw_json",
+    [
+        "{}",                                             # empty payload
+        '{"cancelled": false, "delay_minutes": 90}',      # no found signal at all
+        '{"found": true}',                                # found but no delay
+        '{"found": true, "cancelled": false}',            # found, not cancelled, no delay
+        '{"found": true, "delay_minutes": null}',         # explicit null delay
+    ],
+)
+def test_incomplete_extraction_fails_closed_and_refunds(
+    direct_vm, direct_deploy, direct_alice, direct_bob, transfers, raw_json
+):
+    """Every incomplete payload settles FAILED and queues the premium refund."""
+    contract = direct_deploy(CONTRACT)
+    pid = new_policy(direct_vm, contract, direct_alice, direct_bob, threshold=60)
+    _submit(direct_vm, contract, direct_alice, pid)
+
+    _mock_raw_extraction(direct_vm, raw_json)
+    assert contract.evaluate_claim(pid) == "FAILED"
+    assert contract.get_policy(pid)["verdict"] == "EXTERNAL"
+    # Fail-closed: the premium comes back to the holder, never stays in the pool.
+    assert contract.claimable_of(_hex(direct_alice)) == str(ONE_GEN)
+    assert contract.get_stats()["failed"] == 1
+    assert contract.get_stats()["rejected"] == 0
+    # No push transfer: the refund is a queued pull payment.
+    assert transfers == []
+    # Reserve is released and solvency holds.
+    assert contract.get_stats()["reserved_atto"] == "0"
+    assert contract.get_stats()["liquidity_invariant"] is True
+
+
+def test_incomplete_extraction_refund_is_withdrawable(
+    direct_vm, direct_deploy, direct_alice, direct_bob, transfers
+):
+    """The fail-closed refund is a real, withdrawable balance, not just a flag."""
+    contract = direct_deploy(CONTRACT)
+    pid = new_policy(direct_vm, contract, direct_alice, direct_bob, threshold=60)
+    _submit(direct_vm, contract, direct_alice, pid)
+
+    _mock_raw_extraction(direct_vm, "{}")
+    assert contract.evaluate_claim(pid) == "FAILED"
+    assert transfers == []
+
+    direct_vm.sender = direct_alice
+    contract.withdraw()
+    assert contract.claimable_of(_hex(direct_alice)) == "0"
+    assert transfers == [{"to": _hex(direct_alice), "value": ONE_GEN}]
+
+
+def test_zero_delay_still_rejects_and_keeps_premium(
+    direct_vm, direct_deploy, direct_alice, direct_bob, transfers
+):
+    """A complete on-time extraction (explicit delay 0) is a rejection, not a refund.
+
+    This is the boundary the fail-closed change must not cross: a genuine
+    zero-delay observation still keeps the premium, only a *missing* delay is
+    treated as unconfirmed.
+    """
+    contract = direct_deploy(CONTRACT)
+    pid = new_policy(direct_vm, contract, direct_alice, direct_bob, threshold=60)
+    _submit(direct_vm, contract, direct_alice, pid)
+
+    _mock_raw_extraction(
+        direct_vm, '{"found": true, "cancelled": false, "delay_minutes": 0}'
+    )
+    assert contract.evaluate_claim(pid) == "REJECTED"
+    assert contract.claimable_of(_hex(direct_alice)) == "0"
+    assert contract.get_stats()["rejected"] == 1
+    assert contract.get_stats()["failed"] == 0
+    assert transfers == []
+
+
+def test_cancelled_without_delay_still_pays_tier2(
+    direct_vm, direct_deploy, direct_alice, direct_bob, transfers
+):
+    """Cancellation is a complete terminal signal: it pays even with no delay field."""
+    contract = direct_deploy(CONTRACT)
+    pid = new_policy(direct_vm, contract, direct_alice, direct_bob, threshold=60)
+    _submit(direct_vm, contract, direct_alice, pid)
+
+    _mock_raw_extraction(direct_vm, '{"found": true, "cancelled": true}')
+    assert contract.evaluate_claim(pid) == "SETTLED_PAID"
+    assert contract.get_claim_verdict(pid)["payout_tier"] == 2
+    assert transfers == [
+        {"to": _hex(direct_alice), "value": ONE_GEN * TIER2_MULTIPLIER}
+    ]
+
+
+def test_transient_blank_page_fails_closed_and_refunds(
+    direct_vm, direct_deploy, direct_alice, direct_bob, transfers
+):
+    """A blank / network-delayed render cannot confirm a delay, so it refunds.
+
+    Fail-closed: the mock would classify a 90-minute delay if the page ever
+    parsed, but a blank observation collapses to the unconfirmed refund path
+    rather than reverting and stranding the claim.
+    """
     contract = direct_deploy(CONTRACT)
     pid = new_policy(direct_vm, contract, direct_alice, direct_bob)
     _submit(direct_vm, contract, direct_alice, pid)
 
     mock_flight_page(direct_vm, "")  # blank render
     mock_extraction(direct_vm, delay=90)
-    with direct_vm.expect_revert("[TRANSIENT]"):
-        contract.evaluate_claim(pid)
-    assert contract.get_policy(pid)["status"] == "CLAIM_SUBMITTED"
+    assert contract.evaluate_claim(pid) == "FAILED"
+    assert contract.get_policy(pid)["verdict"] == "EXTERNAL"
+    assert contract.claimable_of(_hex(direct_alice)) == str(ONE_GEN)
+    assert contract.get_stats()["failed"] == 1
+    assert contract.get_stats()["reserved_atto"] == "0"
+    assert transfers == []
 
 
-def test_llm_error_on_non_numeric_delay_reverts(direct_vm, direct_deploy, direct_alice, direct_bob):
+def test_malformed_llm_response_fails_closed_and_refunds(
+    direct_vm, direct_deploy, direct_alice, direct_bob, transfers
+):
+    """A malformed / ambiguous model payload refunds instead of reverting.
+
+    The model returns a non-numeric delay for a found flight: the extraction is
+    ambiguous, so it fails closed to the unconfirmed refund path.
+    """
     contract = direct_deploy(CONTRACT)
     pid = new_policy(direct_vm, contract, direct_alice, direct_bob)
     _submit(direct_vm, contract, direct_alice, pid)
@@ -1010,9 +1132,11 @@ def test_llm_error_on_non_numeric_delay_reverts(direct_vm, direct_deploy, direct
         r".*extraction engine.*",
         '{"found": true, "cancelled": false, "delay_minutes": "soon"}',
     )
-    with direct_vm.expect_revert("[LLM_ERROR]"):
-        contract.evaluate_claim(pid)
-    assert contract.get_policy(pid)["status"] == "CLAIM_SUBMITTED"
+    assert contract.evaluate_claim(pid) == "FAILED"
+    assert contract.get_policy(pid)["verdict"] == "EXTERNAL"
+    assert contract.claimable_of(_hex(direct_alice)) == str(ONE_GEN)
+    assert contract.get_stats()["failed"] == 1
+    assert transfers == []
 
 
 # --------------------------------------------------------------------------- #
